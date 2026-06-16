@@ -33,6 +33,9 @@ const TRIM_CHUNK = 1024;
 const SAVE_DEBOUNCE_MS = 6000;
 const DEFAULT_START_PRICE = 1000;
 const MAX_TF = 300; // largest supported timeframe — trim on its boundary
+// Price is a multiplicative (geometric) random walk: always positive, can drift
+// arbitrarily close to zero like a crypto asset but never below this floor.
+export const MIN_PRICE = 1e-7;
 
 // Speed regimes control the inter-tick delay range — this is what makes the
 // stream visibly speed up and slow down over time.
@@ -44,12 +47,13 @@ const SPEED_REGIMES = [
   { name: 'sparse', minDelay: 950, maxDelay: 1900 },
 ] as const;
 
-// Volatility regimes control the size of each random step.
+// Volatility regimes — standard deviation of log-returns per sqrt-second
+// (i.e. fractional moves). Multiplicative steps keep the price positive.
 const VOL_REGIMES = [
-  { name: 'quiet', vol: 0.18 },
-  { name: 'normal', vol: 0.5 },
-  { name: 'active', vol: 1.0 },
-  { name: 'wild', vol: 2.0 },
+  { name: 'quiet', vol: 0.0008 },
+  { name: 'normal', vol: 0.002 },
+  { name: 'active', vol: 0.0045 },
+  { name: 'wild', vol: 0.01 },
 ] as const;
 
 export const SPEED_NAMES: string[] = SPEED_REGIMES.map((s) => s.name);
@@ -107,7 +111,7 @@ export class Engine {
     const s = loadState();
     // Only restore a non-empty, validated record; otherwise seed a fresh chart.
     if (s && s.base.length > 0) {
-      this.price = s.price;
+      this.price = Math.max(s.price, MIN_PRICE);
       this.startPrice = s.startPrice ?? s.price;
       this.simTimeMs = s.simTimeMs;
       this.tickCount = s.tickCount ?? 0;
@@ -236,13 +240,14 @@ export class Engine {
       if (this.regime.volTtl <= 0) this.rollVolRegime();
     }
 
-    // Advance the simulated clock and step the price (pure random walk, no
-    // drift, scaled by sqrt(dt) so volatility is time-consistent). Guard the
-    // step so a non-finite value can never poison the price / candles.
+    // Advance the simulated clock and step the price. Geometric (multiplicative)
+    // random walk, no drift: price *= exp(σ·√dt·N(0,1)). Stays strictly positive,
+    // can approach (but never cross) MIN_PRICE — like a crypto asset toward zero.
     this.simTimeMs += delay;
     const dt = delay / 1000;
-    const step = gaussian() * this.regime.vol * Math.sqrt(dt);
-    if (Number.isFinite(step)) this.price += step;
+    const factor = Math.exp(gaussian() * this.regime.vol * Math.sqrt(dt));
+    if (Number.isFinite(factor)) this.price *= factor;
+    if (this.price < MIN_PRICE) this.price = MIN_PRICE;
     this.tickCount++;
 
     this.commitTick();
@@ -313,7 +318,7 @@ export class Engine {
       this.saveTimer = null;
     }
     saveState({
-      v: 1,
+      v: 2,
       price: this.price,
       simTimeMs: this.simTimeMs,
       tickCount: this.tickCount,

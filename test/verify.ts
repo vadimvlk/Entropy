@@ -13,6 +13,9 @@ const mem = new Map<string, string>();
 import { aggregate, lastGroup, type Candle } from '../src/engine';
 import { loadState, saveState, compactBase, type PersistedState } from '../src/storage';
 import { FibTool } from '../src/fib';
+import { Account } from '../src/trading';
+
+const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 let passed = 0;
 let failed = 0;
@@ -53,7 +56,7 @@ check('lastGroup matches last bucket (incl volume 13)', lg.time === 105 && lg.op
 
 // --- storage validation incl volume round-trip ---
 const goodState: PersistedState = {
-  v: 1,
+  v: 2,
   price: 100,
   simTimeMs: 1_000_000,
   tickCount: 5,
@@ -89,6 +92,51 @@ check('fib levels = [100,150,200,300]', lvls[0] === 100 && lvls[1] === 150 && lv
 fib.setPrices(50, 40); // inverted
 const lvls2 = fib.levelPrices();
 check('fib inverted levels = [50,45,40,30]', lvls2[0] === 50 && lvls2[1] === 45 && lvls2[2] === 40 && lvls2[3] === 30);
+
+// --- Trading account ---
+const acc = new Account();
+acc.reset(false);
+check('fresh: balance 1000, flat', acc.balance === 1000 && acc.position === 0);
+check('fresh maxQty @1000 = 10 contracts', approx(acc.maxQty(1000), 10));
+
+acc.market('buy', 1, 1000);
+check('buy 1 @1000: pos 1, entry 1000', acc.position === 1 && acc.avgEntry === 1000);
+check('margin used = 100 (1:10)', approx(acc.marginUsed(1000), 100));
+check('unrealized @1100 = +100', approx(acc.unrealized(1100), 100));
+check('equity @1100 = 1100', approx(acc.equity(1100), 1100));
+
+acc.market('buy', 1, 1200); // add → avg (1000+1200)/2 = 1100
+check('add: pos 2, avg 1100', acc.position === 2 && approx(acc.avgEntry, 1100));
+
+// margin reject
+acc.reset(false);
+const rej = acc.market('buy', 11, 1000); // needs 1100 margin > 1000 equity
+check('over-leverage rejected', rej.ok === false);
+check('rejected leaves flat', acc.position === 0);
+
+// flip: long 1, sell 2 → short 1 (the user's scenario)
+acc.reset(false);
+acc.market('buy', 1, 100);
+const flip = acc.market('sell', 2, 110);
+check('flip ok', flip.ok === true);
+check('flip → short 1', approx(acc.position, -1) && acc.side() === 'short');
+check('flip entry = 110', approx(acc.avgEntry, 110));
+check('flip realized +10 (closed long)', approx(acc.realized, 10) && approx(acc.balance, 1010));
+
+// partial close
+acc.reset(false);
+acc.market('buy', 1, 100);
+acc.market('sell', 0.4, 130); // close 0.4 of long, realized 0.4*(130-100)=12
+check('partial close → pos 0.6', approx(acc.position, 0.6));
+check('partial close realized +12', approx(acc.realized, 12));
+check('partial close keeps entry 100', approx(acc.avgEntry, 100));
+
+// liquidation keeps balance positive
+acc.reset(false);
+acc.market('buy', 10, 1000); // full margin, equity 1000
+check('no liq at 960', acc.liquidateIfNeeded(960) === false);
+check('liquidates at 947', acc.liquidateIfNeeded(947) === true);
+check('after liq: flat & balance > 0', acc.position === 0 && acc.balance > 0);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

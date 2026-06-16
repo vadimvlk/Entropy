@@ -12,24 +12,34 @@ import {
   CrosshairMode,
   LineStyle,
   ColorType,
+  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
   type IPriceLine,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
   type MouseEventParams,
   type SeriesType,
   type DeepPartial,
   type ChartOptions,
+  type PriceFormat,
+  type Coordinate,
 } from 'lightweight-charts';
 import { aggregate, lastGroup, type Candle, type TfSeconds } from './engine';
 import { VerticalLine } from './verticalLine';
 import { FibTool, type FibColors } from './fib';
+import { HiLoLabels, type HiLoColors } from './hilo';
+import { formatPrice } from './format';
 import { loadDrawings, saveDrawings, clearDrawings, type Drawings } from './storage';
 
 export type ChartType = 'candles' | 'line' | 'area';
 export type Tool = 'cursor' | 'crosshair' | 'hline' | 'vline' | 'fib' | 'erase';
 export type Theme = 'dark' | 'light';
+export type PosSide = 'long' | 'short' | 'flat';
+
+const PRICE_FORMAT: PriceFormat = { type: 'custom', formatter: (p) => formatPrice(p as number), minMove: 1e-7 };
 
 interface Palette {
   up: string;
@@ -48,6 +58,7 @@ interface Palette {
   volUp: string;
   volDown: string;
   fib: FibColors;
+  hilo: HiLoColors;
 }
 
 const PALETTES: Record<Theme, Palette> = {
@@ -72,6 +83,7 @@ const PALETTES: Record<Theme, Palette> = {
       fills: ['rgba(255,92,122,0.07)', 'rgba(255,191,73,0.07)', 'rgba(78,230,196,0.07)'],
       text: '#e8eef7',
     },
+    hilo: { bg: '#39435a', text: '#dbe3ef' },
   },
   light: {
     up: '#0f9d6b',
@@ -94,6 +106,7 @@ const PALETTES: Record<Theme, Palette> = {
       fills: ['rgba(224,36,94,0.07)', 'rgba(217,119,6,0.07)', 'rgba(13,148,136,0.07)'],
       text: '#0e1420',
     },
+    hilo: { bg: '#aab4c4', text: '#16202e' },
   },
 };
 
@@ -121,9 +134,23 @@ export class ChartController {
   private hlinePrices: number[] = [];
   private vlineTimes: number[] = [];
   private fibPrices: [number, number] | null = null;
+  private fibTime: number | null = null;
   private priceLineObjs: IPriceLine[] = [];
   private vlineObjs: VerticalLine[] = [];
   private fib: FibTool | null = null;
+
+  // Trading position overlay.
+  private posEntry: number | null = null;
+  private posLiq: number | null = null;
+  private posSide: PosSide = 'flat';
+  private entryLine: IPriceLine | null = null;
+  private liqLine: IPriceLine | null = null;
+  private markersPlugin: ISeriesMarkersPluginApi<Time> | null = null;
+  private markersData: { time: number; side: 'buy' | 'sell' }[] = [];
+
+  // Visible-range high/low axis labels + cached aggregated series.
+  private hilo: HiLoLabels | null = null;
+  private agg: Candle[] = [];
 
   // Fib drag state.
   private drag: { kind: 'create' | 'move'; grab: 'a' | 'b' | 'body'; lastPrice: number } | null = null;
@@ -173,12 +200,14 @@ export class ChartController {
     this.hlinePrices = d.hlines.slice();
     this.vlineTimes = d.vlines.slice();
     this.fibPrices = d.fib ? [d.fib[0], d.fib[1]] : null;
+    this.fibTime = d.fib ? d.fib[2] : null;
 
     this.createSeries();
     this.createVolume();
 
     this.chart.subscribeClick((p) => this.onClick(p));
     this.chart.subscribeCrosshairMove((p) => this.onCrosshair(p));
+    this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => this.updateHiLo());
     // Raw pointer handling for the draggable Fibonacci tool (capture phase so
     // we can intercept before the chart starts panning).
     this.container.addEventListener('pointerdown', this.onPointerDown, true);
@@ -205,7 +234,7 @@ export class ChartController {
   // ---- Series lifecycle ----
 
   private createSeries(): void {
-    const priceFormat = { type: 'price' as const, precision: 2, minMove: 0.01 };
+    const priceFormat = PRICE_FORMAT;
     if (this.type === 'candles') {
       this.series = this.chart.addSeries(CandlestickSeries, {
         upColor: this.colors.up,
@@ -227,6 +256,10 @@ export class ChartController {
         priceFormat,
       });
     }
+    this.markersPlugin = createSeriesMarkers(this.series, []);
+    this.applyMarkers();
+    this.hilo = new HiLoLabels(this.colors.hilo);
+    this.series.attachPrimitive(this.hilo);
   }
 
   private createVolume(): void {
@@ -290,11 +323,14 @@ export class ChartController {
   setBase(base: Candle[], resetView = true): void {
     this.base = base;
     const agg = aggregate(base, this.tf);
+    this.agg = agg;
     this.series.setData(this.toSeriesData(agg));
     this.volumeSeries.setData(this.toVolumeData(agg));
     this.renderDrawings();
+    this.applyMarkers();
     if (resetView) this.showRecent(agg.length);
     this.emitLatest();
+    this.updateHiLo();
   }
 
   private showRecent(n: number): void {
@@ -310,13 +346,46 @@ export class ChartController {
     if (!g) return;
     this.series.update(this.toSeriesPoint(g));
     this.volumeSeries.update(this.toVolumePoint(g));
+    // Keep the aggregated cache tail in sync (used for visible high/low).
+    const n = this.agg.length;
+    if (n && this.agg[n - 1].time === g.time) this.agg[n - 1] = g;
+    else this.agg.push(g);
     if (!this.hovering) this.cb.onBar?.(g, true);
     for (const v of this.vlineObjs) v.updateAllViews();
     this.fib?.updateAllViews();
+    this.updateHiLo();
   }
 
   private emitLatest(): void {
     this.cb.onBar?.(lastGroup(this.base, this.tf), true);
+  }
+
+  /** Highest high / lowest low across the currently visible bars → axis labels. */
+  private updateHiLo(): void {
+    if (!this.hilo) return;
+    const n = this.agg.length;
+    if (n === 0) {
+      this.hilo.set(null, null);
+      return;
+    }
+    const range = this.chart.timeScale().getVisibleLogicalRange();
+    let from = 0;
+    let to = n - 1;
+    if (range) {
+      from = Math.max(0, Math.floor(range.from as number));
+      to = Math.min(n - 1, Math.ceil(range.to as number));
+    }
+    if (from > to) {
+      this.hilo.set(null, null);
+      return;
+    }
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let i = from; i <= to; i++) {
+      if (this.agg[i].high > hi) hi = this.agg[i].high;
+      if (this.agg[i].low < lo) lo = this.agg[i].low;
+    }
+    this.hilo.set(hi, lo);
   }
 
   // ---- Theme ----
@@ -335,6 +404,9 @@ export class ChartController {
     this.applySeriesColors();
     this.volumeSeries.setData(this.toVolumeData(aggregate(this.base, this.tf)));
     this.renderDrawings();
+    this.applyMarkers();
+    this.hilo?.setColors(this.colors.hilo);
+    this.updateHiLo();
   }
 
   getTheme(): Theme {
@@ -359,6 +431,8 @@ export class ChartController {
     this.type = type;
     // Recreate the price series; drawings re-render against the new one.
     this.priceLineObjs = [];
+    this.entryLine = null;
+    this.liqLine = null;
     for (const v of this.vlineObjs) this.series.detachPrimitive(v);
     this.vlineObjs = [];
     if (this.fib) {
@@ -443,7 +517,7 @@ export class ChartController {
       }
     }
     // Fib: erase if clicking near any of its level lines.
-    if (this.fib && this.hitTestFib(p.point.y)) {
+    if (this.fib && this.hitTestFib(p.point.x, p.point.y)) {
       this.removeFib();
       this.persistAndRenderDrawings();
     }
@@ -460,7 +534,7 @@ export class ChartController {
   }
 
   private persistAndRenderDrawings(): void {
-    const d: Drawings = { hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibPrices };
+    const d: Drawings = { hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibTuple() };
     saveDrawings(d);
     this.renderDrawings();
     this.emitDrawingCounts();
@@ -468,7 +542,7 @@ export class ChartController {
 
   /** Persist only (drawings already rendered live, e.g. after a fib drag). */
   private persistDrawings(): void {
-    saveDrawings({ hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibPrices });
+    saveDrawings({ hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibTuple() });
     this.emitDrawingCounts();
   }
 
@@ -502,9 +576,75 @@ export class ChartController {
       this.fib = null;
     }
     if (this.fibPrices) {
-      this.fib = new FibTool(this.fibPrices[0], this.fibPrices[1], this.colors.fib);
+      this.fib = new FibTool(this.fibPrices[0], this.fibPrices[1], this.fibAnchorTime(), this.colors.fib);
       this.series.attachPrimitive(this.fib);
     }
+    this.renderPositionLines();
+  }
+
+  // ---- Trading position overlay ----
+
+  /** Show entry + liquidation price lines for the open position (or clear). */
+  setPosition(entry: number | null, liq: number | null, side: PosSide): void {
+    this.posEntry = entry;
+    this.posLiq = liq;
+    this.posSide = side;
+    this.renderPositionLines();
+  }
+
+  private renderPositionLines(): void {
+    if (this.entryLine) {
+      this.series.removePriceLine(this.entryLine);
+      this.entryLine = null;
+    }
+    if (this.liqLine) {
+      this.series.removePriceLine(this.liqLine);
+      this.liqLine = null;
+    }
+    if (this.posEntry === null || this.posSide === 'flat') return;
+    const col = this.posSide === 'long' ? this.colors.up : this.colors.down;
+    this.entryLine = this.series.createPriceLine({
+      price: this.posEntry,
+      color: col,
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      axisLabelVisible: true,
+      title: this.posSide === 'long' ? 'LONG' : 'SHORT',
+    });
+    if (this.posLiq !== null && this.posLiq > 0) {
+      this.liqLine = this.series.createPriceLine({
+        price: this.posLiq,
+        color: this.colors.down,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'LIQ',
+      });
+    }
+  }
+
+  /** Add a trade marker (buy/sell arrow) at the given base time. */
+  addMarker(time: number, side: 'buy' | 'sell'): void {
+    this.markersData.push({ time, side });
+    if (this.markersData.length > 200) this.markersData.splice(0, this.markersData.length - 200);
+    this.applyMarkers();
+  }
+
+  clearMarkers(): void {
+    this.markersData = [];
+    this.applyMarkers();
+  }
+
+  private applyMarkers(): void {
+    if (!this.markersPlugin) return;
+    const markers: SeriesMarker<Time>[] = this.markersData.map((m) => {
+      const t = (this.tf === 1 ? m.time : Math.floor(m.time / this.tf) * this.tf) as UTCTimestamp as Time;
+      return m.side === 'buy'
+        ? { time: t, position: 'belowBar' as const, color: this.colors.up, shape: 'arrowUp' as const, text: 'B' }
+        : { time: t, position: 'aboveBar' as const, color: this.colors.down, shape: 'arrowDown' as const, text: 'S' };
+    });
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
+    this.markersPlugin.setMarkers(markers);
   }
 
   private removeFib(): void {
@@ -513,6 +653,7 @@ export class ChartController {
       this.fib = null;
     }
     this.fibPrices = null;
+    this.fibTime = null;
   }
 
   drawingCounts(): { h: number; v: number; fib: number } {
@@ -525,35 +666,69 @@ export class ChartController {
     return clientY - this.container.getBoundingClientRect().top;
   }
 
-  private hitTestFib(y: number): 'a' | 'b' | 'body' | null {
+  /** Time (UTCTimestamp s) under a screen X — used as the fib's left anchor. */
+  private timeFromX(x: number): number {
+    const t = this.chart.timeScale().coordinateToTime(x as Coordinate);
+    if (typeof t === 'number') return t as number;
+    const data = aggregate(this.base, this.tf);
+    return data.length ? data[data.length - 1].time : 0;
+  }
+
+  private fibAnchorTime(): number {
+    if (this.fibTime !== null) return this.fibTime;
+    return this.base.length ? this.base[this.base.length - 1].time : 0;
+  }
+
+  private fibTuple(): [number, number, number] | null {
+    return this.fibPrices ? [this.fibPrices[0], this.fibPrices[1], this.fibAnchorTime()] : null;
+  }
+
+  private hitTestFib(x: number, y: number): 'a' | 'b' | 'body' | null {
     if (!this.fib) return null;
-    const a = this.series.priceToCoordinate(this.fib.priceA);
-    const b = this.series.priceToCoordinate(this.fib.priceB);
-    if (a === null || b === null) return null;
+    // Respect the fib's horizontal extent — nothing to the left of its anchor.
+    let x0 = 0;
+    const c = this.chart.timeScale().timeToCoordinate(this.fibAnchorTime() as UTCTimestamp as Time);
+    if (c !== null) x0 = Math.max(0, c as number);
+    if (x < x0 - 2) return null;
+    // Grab only when the cursor is near a horizontal level line (the line ± a
+    // few px) — not anywhere inside the band.
     const T = 6;
-    if (Math.abs((a as number) - y) <= T) return 'a';
-    if (Math.abs((b as number) - y) <= T) return 'b';
-    const top = Math.min(a as number, b as number);
-    const bot = Math.max(a as number, b as number);
-    if (y > top && y < bot) return 'body';
+    const levels = this.fib.levelPrices();
+    for (let i = 0; i < levels.length; i++) {
+      const ly = this.series.priceToCoordinate(levels[i]);
+      if (ly !== null && Math.abs((ly as number) - y) <= T) {
+        if (i === 0) return 'a'; // 0% line → drag the low anchor
+        if (i === 2) return 'b'; // 100% line → drag the high anchor
+        return 'body'; // 50% / 200% lines → translate the whole fib
+      }
+    }
     return null;
   }
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
     if (this.tool !== 'fib' && this.tool !== 'cursor') return; // other tools use subscribeClick
-    const y = this.localY(e.clientY);
+    // Ignore the axis gutters — dragging the right price scale must scale the
+    // axis, and the bottom time scale must scale time, NOT move a drawing.
+    const rect = this.container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const yLocal = e.clientY - rect.top;
+    const priceScaleW = this.chart.priceScale('right').width();
+    const timeScaleH = this.chart.timeScale().height();
+    if (x > rect.width - priceScaleW || yLocal > rect.height - timeScaleH) return;
+    const y = yLocal;
     const price = this.series.coordinateToPrice(y);
     if (price === null) return;
     const p = price as number;
 
-    const hit = this.hitTestFib(y);
+    const hit = this.hitTestFib(x, y);
     if (hit) {
       this.drag = { kind: 'move', grab: hit, lastPrice: p };
       this.beginDrag(e);
     } else if (this.tool === 'fib' && !this.fib) {
+      this.fibTime = this.timeFromX(x);
       this.fibPrices = [p, p];
-      this.fib = new FibTool(p, p, this.colors.fib);
+      this.fib = new FibTool(p, p, this.fibTime, this.colors.fib);
       this.series.attachPrimitive(this.fib);
       this.drag = { kind: 'create', grab: 'b', lastPrice: p };
       this.beginDrag(e);

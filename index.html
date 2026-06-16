@@ -155,7 +155,52 @@
           </div>
           <div class="chart-hint" id="chart-hint"></div>
           <div class="watermark">RNDM·USD · ∑ ENTROPY</div>
+          <div class="toast" id="toast"></div>
         </main>
+
+        <aside class="orderpanel" data-reveal>
+          <section class="op-card">
+            <div class="op-head">СЧЁТ <span class="op-lev">1:10</span></div>
+            <div class="op-row"><span>Баланс</span><b id="ac-balance">—</b></div>
+            <div class="op-row"><span>Средства</span><b id="ac-equity">—</b></div>
+            <div class="op-row"><span>Свободно</span><b id="ac-free">—</b></div>
+            <div class="op-row"><span>Реализ. P&amp;L</span><b id="ac-realized" class="signed">—</b></div>
+          </section>
+
+          <section class="op-card op-position" id="op-position">
+            <div class="op-head">ПОЗИЦИЯ <span class="pos-badge flat" id="pos-side">НЕТ</span></div>
+            <div class="op-pnl signed" id="pos-pnl">$0.00</div>
+            <div class="op-pnl-pct signed" id="pos-pnl-pct">0.00%</div>
+            <div class="op-row"><span>Размер</span><b id="pos-size">0</b></div>
+            <div class="op-row"><span>Вход</span><b id="pos-entry">—</b></div>
+            <div class="op-row"><span>Цена</span><b id="pos-mark">—</b></div>
+            <div class="op-row"><span>Ликвидация</span><b id="pos-liq" class="liq">—</b></div>
+            <button class="op-close" id="btn-close" disabled>Закрыть позицию</button>
+          </section>
+
+          <section class="op-card op-order">
+            <div class="op-head">ОРДЕР · РЫНОК</div>
+            <div class="qty-stepper">
+              <button id="qty-minus" aria-label="Меньше">−</button>
+              <input id="qty-input" type="text" inputmode="decimal" value="0.1" />
+              <span class="qty-unit">конт.</span>
+              <button id="qty-plus" aria-label="Больше">+</button>
+            </div>
+            <div class="qty-presets">
+              <button data-qmul="0.25">25%</button>
+              <button data-qmul="0.5">50%</button>
+              <button data-qmul="0.75">75%</button>
+              <button data-qmul="1">MAX</button>
+            </div>
+            <div class="op-meta"><span>Объём</span><b id="ord-notional">—</b></div>
+            <div class="op-meta"><span>Маржа</span><b id="ord-margin">—</b></div>
+            <div class="op-meta"><span>Доступно</span><b id="ord-max">—</b></div>
+            <div class="op-buttons">
+              <button class="btn-buy" id="btn-buy">КУПИТЬ<small>BUY / LONG</small></button>
+              <button class="btn-sell" id="btn-sell">ПРОДАТЬ<small>SELL / SHORT</small></button>
+            </div>
+          </section>
+        </aside>
       </div>
 
       <!-- ============ STATUS BAR ============ -->

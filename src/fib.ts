@@ -1,12 +1,13 @@
 // Fibonacci tool primitive with fixed levels 0 / 50 / 100 / 200%.
-// Two price anchors (priceA = 0%, priceB = 100%); the levels are drawn as
-// horizontal lines spanning the full pane width with translucent bands and
-// labels. Dragging (place / move / adjust anchors) is handled in chart.ts.
+// Two price anchors (priceA = 0%, priceB = 100%) plus a TIME anchor: the levels
+// are drawn only from that time to the right edge (never into history on the
+// left). Dragging (place / move / adjust anchors) is handled in chart.ts.
 
 import type {
   ISeriesPrimitive,
   SeriesAttachedParameter,
   Time,
+  UTCTimestamp,
   IPrimitivePaneView,
   IPrimitivePaneRenderer,
   PrimitivePaneViewZOrder,
@@ -23,6 +24,7 @@ export interface FibColors {
 
 class FibRenderer implements IPrimitivePaneRenderer {
   constructor(
+    private readonly x0: number, // left edge (media px); levels span x0 → right
     private readonly ys: (number | null)[],
     private readonly prices: number[],
     private readonly colors: FibColors,
@@ -34,8 +36,10 @@ class FibRenderer implements IPrimitivePaneRenderer {
       const hr = scope.horizontalPixelRatio;
       const vr = scope.verticalPixelRatio;
       const w = scope.bitmapSize.width;
+      const x0b = Math.round(Math.max(0, this.x0) * hr);
+      if (x0b >= w) return; // anchor scrolled off to the right — nothing to draw
 
-      // Band fills between consecutive levels.
+      // Band fills between consecutive levels (only to the right of the anchor).
       for (let i = 0; i < this.ys.length - 1; i++) {
         const y0 = this.ys[i];
         const y1 = this.ys[i + 1];
@@ -43,7 +47,7 @@ class FibRenderer implements IPrimitivePaneRenderer {
         ctx.fillStyle = this.colors.fills[i] ?? 'rgba(120,162,255,0.06)';
         const top = Math.min(y0, y1) * vr;
         const h = Math.abs(y1 - y0) * vr;
-        ctx.fillRect(0, top, w, h);
+        ctx.fillRect(x0b, top, w - x0b, h);
       }
 
       ctx.font = `${Math.round(11 * vr)}px 'JetBrains Mono', monospace`;
@@ -58,38 +62,47 @@ class FibRenderer implements IPrimitivePaneRenderer {
         ctx.beginPath();
         ctx.strokeStyle = col;
         ctx.lineWidth = Math.max(1, Math.round(hr));
-        ctx.moveTo(0, py);
+        ctx.moveTo(x0b, py);
         ctx.lineTo(w, py);
         ctx.stroke();
 
         const label = `${FIB_LEVELS[i]}%  ${this.prices[i].toFixed(2)}`;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = 'rgba(0,0,0,0.35)';
-        ctx.fillRect(6 * hr, py - 9 * vr, tw + 10 * hr, 18 * vr);
+        ctx.fillRect(x0b + 4 * hr, py - 9 * vr, tw + 10 * hr, 18 * vr);
         ctx.fillStyle = col;
-        ctx.fillText(label, 11 * hr, py);
+        ctx.fillText(label, x0b + 9 * hr, py);
       }
     });
   }
 }
 
 class FibPaneView implements IPrimitivePaneView {
+  private x0 = 0;
   private ys: (number | null)[] = [];
   private prices: number[] = [];
   constructor(private readonly source: FibTool) {}
 
   update(): void {
     const s = this.source.series;
+    const chart = this.source.chart;
     this.prices = this.source.levelPrices();
     this.ys = this.prices.map((p) => {
       if (!s) return null;
       const c = s.priceToCoordinate(p);
       return c === null ? null : (c as number);
     });
+    // Left edge = the time anchor projected to screen X (clamped to the pane).
+    let x = 0;
+    if (chart) {
+      const c = chart.timeScale().timeToCoordinate(this.source.time as UTCTimestamp as Time);
+      if (c !== null) x = c as number;
+    }
+    this.x0 = x;
   }
 
   renderer(): IPrimitivePaneRenderer {
-    return new FibRenderer(this.ys, this.prices, this.source.colors);
+    return new FibRenderer(this.x0, this.ys, this.prices, this.source.colors);
   }
 
   zOrder(): PrimitivePaneViewZOrder {
@@ -99,12 +112,14 @@ class FibPaneView implements IPrimitivePaneView {
 
 export class FibTool implements ISeriesPrimitive<Time> {
   series: SeriesAttachedParameter<Time>['series'] | null = null;
+  chart: SeriesAttachedParameter<Time>['chart'] | null = null;
   private requestUpdate?: () => void;
   private readonly views: FibPaneView[];
 
   constructor(
     public priceA: number,
     public priceB: number,
+    public time: number, // UTCTimestamp seconds — left anchor
     public colors: FibColors,
   ) {
     this.views = [new FibPaneView(this)];
@@ -112,11 +127,13 @@ export class FibTool implements ISeriesPrimitive<Time> {
 
   attached(param: SeriesAttachedParameter<Time>): void {
     this.series = param.series;
+    this.chart = param.chart;
     this.requestUpdate = param.requestUpdate;
   }
 
   detached(): void {
     this.series = null;
+    this.chart = null;
     this.requestUpdate = undefined;
   }
 

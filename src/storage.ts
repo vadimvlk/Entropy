@@ -16,8 +16,10 @@ export interface PersistedRegime {
   volName?: string;
 }
 
+// v2: price model changed to a multiplicative (always-positive) walk, so the
+// old additive-model records are intentionally discarded on first load.
 export interface PersistedState {
-  v: 1;
+  v: 2;
   price: number;
   simTimeMs: number;
   tickCount: number;
@@ -70,7 +72,7 @@ export function loadState(): PersistedState | null {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const p = JSON.parse(raw) as PersistedState;
-    if (!p || p.v !== 1) return null;
+    if (!p || p.v !== 2) return null;
     // Validate all numeric fields are finite — a corrupt/partial record must
     // fall back to a fresh seed, not boot the engine into a broken state
     // (e.g. a NaN delay would busy-loop, a NaN price would poison every candle).
@@ -127,7 +129,7 @@ const DKEY = 'random-walk-terminal:drawings:v1';
 export interface Drawings {
   hlines: number[]; // prices
   vlines: number[]; // UTCTimestamp seconds
-  fib: [number, number] | null; // [price0, price100]
+  fib: [number, number, number] | null; // [price0, price100, anchorTime]
 }
 
 export function loadDrawings(): Drawings {
@@ -137,8 +139,8 @@ export function loadDrawings(): Drawings {
     if (!raw) return empty;
     const d = JSON.parse(raw) as Drawings;
     const fib =
-      Array.isArray(d.fib) && d.fib.length === 2 && isNum(d.fib[0]) && isNum(d.fib[1])
-        ? ([d.fib[0], d.fib[1]] as [number, number])
+      Array.isArray(d.fib) && d.fib.length === 3 && d.fib.every((n) => isNum(n))
+        ? ([d.fib[0], d.fib[1], d.fib[2]] as [number, number, number])
         : null;
     return {
       hlines: Array.isArray(d.hlines) ? d.hlines.filter(isNum) : [],
@@ -204,6 +206,47 @@ export function loadPrefs(): Prefs | null {
 export function savePrefs(p: Prefs): void {
   try {
     localStorage.setItem(PKEY, JSON.stringify(p));
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---- Trading account ----
+
+const AKEY = 'random-walk-terminal:account:v1';
+
+export interface PersistedAccount {
+  balance: number;
+  position: number;
+  avgEntry: number;
+  realized: number;
+  startDeposit: number;
+}
+
+export function loadAccount(): PersistedAccount | null {
+  try {
+    const raw = localStorage.getItem(AKEY);
+    if (!raw) return null;
+    const a = JSON.parse(raw) as PersistedAccount;
+    if (!a || !isNum(a.balance) || !isNum(a.position) || !isNum(a.avgEntry) || !isNum(a.realized)) return null;
+    if (!isNum(a.startDeposit)) a.startDeposit = a.balance;
+    return a;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAccount(a: PersistedAccount): void {
+  try {
+    localStorage.setItem(AKEY, JSON.stringify(a));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearAccount(): void {
+  try {
+    localStorage.removeItem(AKEY);
   } catch {
     /* ignore */
   }
