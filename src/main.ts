@@ -104,10 +104,10 @@ function boot(): void {
   const mmImpactInput = $<HTMLInputElement>('#mm-impact-input');
   const mmMark = $('#mm-mark');
   const mmDelta = $('#mm-delta');
-  const mmShots = $('#mm-shots');
+  const mmNetEl = $('#mm-net');
   const mmBuy = $('#mm-buy');
   const mmSell = $('#mm-sell');
-  let mmShotCount = 0;
+  let mmNet = 0; // net impact: Σ(up) − Σ(down), in $
 
   selSpeed.innerHTML = SPEED_NAMES.map((n) => `<option value="${n}">${SPEED_LABELS[n] ?? n}</option>`).join('');
   selVol.innerHTML = VOL_NAMES.map((n) => `<option value="${n}">${VOL_LABELS[n] ?? n}</option>`).join('');
@@ -364,11 +364,16 @@ function boot(): void {
     mmImpactInput.value = Math.max(0.1, roundStep(v, 0.1)).toFixed(1);
     updateTrading(engine.price);
   }
+  function renderMmNet(): void {
+    mmNetEl.textContent = (mmNet >= 0 ? '+$' : '−$') + formatMoney(Math.abs(mmNet));
+    mmNetEl.classList.toggle('up', mmNet > 0.0049);
+    mmNetEl.classList.toggle('down', mmNet < -0.0049);
+  }
   function injectMM(dir: 'up' | 'down'): void {
     const amt = mmImpact();
     engine.nudge(dir === 'up' ? amt : -amt);
-    mmShotCount++;
-    mmShots.textContent = String(mmShotCount);
+    mmNet += dir === 'up' ? amt : -amt;
+    renderMmNet();
     toast(
       `${dir === 'up' ? '▲ ВВЕРХ' : '▼ ВНИЗ'} ${dir === 'up' ? '+' : '−'}$${amt.toFixed(1)} @ ${formatPrice(engine.price)}`,
       dir === 'up' ? 'buy' : 'sell',
@@ -504,8 +509,8 @@ function boot(): void {
     if (!window.confirm('Сбросить график и счёт? Начнётся новая случайная последовательность, депозит вернётся к $1000.')) return;
     engine.reset();
     account.reset();
-    mmShotCount = 0;
-    mmShots.textContent = '0';
+    mmNet = 0;
+    renderMmNet();
     chart.clearDrawings();
     chart.clearMarkers();
     chart.setPosition(null, null, 'flat');
