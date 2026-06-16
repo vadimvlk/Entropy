@@ -1,0 +1,21 @@
+{
+  "name": "random-walk-terminal",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort",
+    "build": "tsc && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "test:unit": "esbuild test/verify.ts --bundle --platform=node --format=esm --outfile=test/verify.mjs && node test/verify.mjs",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.0.8"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.3.5"
+  }
+}

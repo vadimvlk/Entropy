@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ENTROPY — Random Walk Terminal</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 17 L8 9 L13 14 L21 4' fill='none' stroke='%234ee6c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <!-- ============ TOP BAR ============ -->
+      <header class="topbar" data-reveal>
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M3 17 L8 9 L13 14 L21 4" />
+              <circle cx="8" cy="9" r="1.6" />
+              <circle cx="13" cy="14" r="1.6" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">ENTROPY</span>
+            <span class="brand-sub">RANDOM&nbsp;WALK&nbsp;TERMINAL</span>
+          </div>
+        </div>
+
+        <div class="ticker">
+          <div class="ticker-head">
+            <span class="sym">RNDM</span><span class="sym-quote">/USD</span>
+            <span class="live" id="live">
+              <i class="dot" id="live-dot"></i><span id="live-label">LIVE</span>
+            </span>
+          </div>
+          <div class="ticker-price">
+            <span class="price" id="price-value">—</span>
+            <span class="change" id="price-change">—</span>
+          </div>
+        </div>
+
+        <div class="topbar-controls">
+          <div class="seg" id="tf-group" role="group" aria-label="Таймфрейм">
+            <button class="seg-btn is-active" data-tf="1" data-tip="1 секунда">1s</button>
+            <button class="seg-btn" data-tf="5" data-tip="5 секунд">5s</button>
+            <button class="seg-btn" data-tf="15" data-tip="15 секунд">15s</button>
+            <button class="seg-btn" data-tf="60" data-tip="1 минута">1m</button>
+            <button class="seg-btn" data-tf="300" data-tip="5 минут">5m</button>
+          </div>
+
+          <div class="seg" id="mode-group" role="group" aria-label="Режим генератора">
+            <button class="seg-btn is-active" data-mode="auto" data-tip="Авто: режим меняется сам">АВТО</button>
+            <button class="seg-btn" data-mode="manual" data-tip="Ручной: скорость и волатильность задаёте вы">РУЧ</button>
+          </div>
+
+          <div class="manual-controls" id="manual-controls" hidden>
+            <label class="msel" data-tip="Скорость потока тиков">
+              <span>СКОР</span>
+              <select id="sel-speed"></select>
+            </label>
+            <label class="msel" data-tip="Волатильность (размер шага)">
+              <span>ВОЛ</span>
+              <select id="sel-vol"></select>
+            </label>
+          </div>
+
+          <div class="seg" id="type-group" role="group" aria-label="Тип графика">
+            <button class="seg-btn is-active" data-type="candles" data-tip="Свечи">
+              <svg class="ico" viewBox="0 0 24 24">
+                <line x1="7" y1="3" x2="7" y2="7" /><rect x="4.5" y="7" width="5" height="8" rx="1" /><line x1="7" y1="15" x2="7" y2="20" />
+                <line x1="16.5" y1="6" x2="16.5" y2="10" /><rect x="14" y="10" width="5" height="6" rx="1" /><line x1="16.5" y1="16" x2="16.5" y2="21" />
+              </svg>
+            </button>
+            <button class="seg-btn" data-type="line" data-tip="Линия">
+              <svg class="ico" viewBox="0 0 24 24"><polyline points="3,16 8,10 12,13 16,6 21,9" /></svg>
+            </button>
+            <button class="seg-btn" data-type="area" data-tip="Область">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M3 16 L8 10 L12 13 L16 6 L21 9 V20 H3 Z" class="fill" /><polyline points="3,16 8,10 12,13 16,6 21,9" /></svg>
+            </button>
+          </div>
+
+          <div class="seg" id="action-group">
+            <button class="seg-btn icon-btn" id="btn-theme" data-tip="Светлая / тёмная тема">
+              <svg class="ico ico-moon" viewBox="0 0 24 24"><path d="M20 14.5 A8 8 0 1 1 9.5 4 a6.3 6.3 0 0 0 10.5 10.5 Z" class="fill" /></svg>
+              <svg class="ico ico-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" class="fill" /><line x1="12" y1="2" x2="12" y2="5" /><line x1="12" y1="19" x2="12" y2="22" /><line x1="2" y1="12" x2="5" y2="12" /><line x1="19" y1="12" x2="22" y2="12" /><line x1="4.6" y1="4.6" x2="6.7" y2="6.7" /><line x1="17.3" y1="17.3" x2="19.4" y2="19.4" /><line x1="4.6" y1="19.4" x2="6.7" y2="17.3" /><line x1="17.3" y1="6.7" x2="19.4" y2="4.6" /></svg>
+            </button>
+            <button class="seg-btn icon-btn" id="btn-playpause" data-tip="Пауза">
+              <svg class="ico ico-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+              <svg class="ico ico-play" viewBox="0 0 24 24"><path d="M7 5 L19 12 L7 19 Z" class="fill" /></svg>
+            </button>
+            <button class="seg-btn icon-btn" id="btn-reset" data-tip="Новый график (сброс)">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.6" /><polyline points="20,5 20,11 14,11" /></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- ============ WORKSPACE ============ -->
+      <div class="workspace">
+        <aside class="toolrail" data-reveal>
+          <button class="tool is-active" data-tool="cursor" data-tip="Курсор / перекрестие">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M5 3 L19 11 L12.5 12.5 L11 19 Z" class="fill" /></svg>
+          </button>
+          <button class="tool" data-tool="crosshair" data-tip="Магнит (привязка к свечам)">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" /><line x1="12" y1="1.5" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22.5" /><line x1="1.5" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22.5" y2="12" /><circle cx="12" cy="12" r="1.4" class="fill" /></svg>
+          </button>
+          <div class="tool-sep"></div>
+          <button class="tool" data-tool="hline" data-tip="Горизонтальная линия">
+            <svg class="ico" viewBox="0 0 24 24"><line x1="2.5" y1="12" x2="21.5" y2="12" /><circle cx="6" cy="12" r="1.7" class="fill" /><circle cx="18" cy="12" r="1.7" class="fill" /></svg>
+          </button>
+          <button class="tool" data-tool="vline" data-tip="Вертикальная линия">
+            <svg class="ico" viewBox="0 0 24 24"><line x1="12" y1="2.5" x2="12" y2="21.5" /><circle cx="12" cy="6" r="1.7" class="fill" /><circle cx="12" cy="18" r="1.7" class="fill" /></svg>
+          </button>
+          <button class="tool" data-tool="fib" data-tip="Фибоначчи 0/50/100/200% — поставьте и двигайте мышью">
+            <svg class="ico" viewBox="0 0 24 24"><line x1="3" y1="5" x2="21" y2="5" /><line x1="3" y1="10" x2="21" y2="10" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="3" y1="20" x2="21" y2="20" /></svg>
+          </button>
+          <button class="tool" data-tool="erase" data-tip="Стереть линию (клик по ней)">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M9 20 L4 15 a2 2 0 0 1 0-2.8 L13 4 a2 2 0 0 1 2.8 0 L20 8.2 a2 2 0 0 1 0 2.8 L11 20 Z" /><line x1="9" y1="20" x2="20" y2="20" /></svg>
+          </button>
+          <button class="tool" id="btn-clear" data-tip="Очистить все линии">
+            <svg class="ico" viewBox="0 0 24 24"><polyline points="4,7 20,7" /><path d="M6 7 L7 20 a1 1 0 0 0 1 1 H16 a1 1 0 0 0 1-1 L18 7" /><path d="M9 7 V4 a1 1 0 0 1 1-1 H14 a1 1 0 0 1 1 1 V7" /></svg>
+          </button>
+          <div class="tool-sep"></div>
+          <button class="tool" id="zoom-in" data-tip="Приблизить">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><line x1="15.5" y1="15.5" x2="21" y2="21" /><line x1="10.5" y1="7.5" x2="10.5" y2="13.5" /><line x1="7.5" y1="10.5" x2="13.5" y2="10.5" /></svg>
+          </button>
+          <button class="tool" id="zoom-out" data-tip="Отдалить">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><line x1="15.5" y1="15.5" x2="21" y2="21" /><line x1="7.5" y1="10.5" x2="13.5" y2="10.5" /></svg>
+          </button>
+          <button class="tool" id="zoom-fit" data-tip="Вместить всё">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M4 9 V4 H9" /><path d="M20 9 V4 H15" /><path d="M4 15 V20 H9" /><path d="M20 15 V20 H15" /></svg>
+          </button>
+          <button class="tool" id="zoom-reset" data-tip="Сбросить масштаб / к реальному времени">
+            <svg class="ico" viewBox="0 0 24 24"><polyline points="13,5 19,5 19,11" /><line x1="19" y1="5" x2="12.5" y2="11.5" /><polyline points="11,19 5,19 5,13" /><line x1="5" y1="19" x2="11.5" y2="12.5" /></svg>
+          </button>
+        </aside>
+
+        <main class="chart-wrap">
+          <div id="chart"></div>
+          <div class="legend" id="legend">
+            <span class="legend-time" id="lg-t">—</span>
+            <span class="legend-pair"><b>O</b><span id="lg-o">—</span></span>
+            <span class="legend-pair"><b>H</b><span id="lg-h">—</span></span>
+            <span class="legend-pair"><b>L</b><span id="lg-l">—</span></span>
+            <span class="legend-pair"><b>C</b><span id="lg-c">—</span></span>
+            <span class="legend-pair"><b>V</b><span id="lg-v">—</span></span>
+            <span class="legend-chg" id="lg-chg">—</span>
+          </div>
+          <div class="chart-hint" id="chart-hint"></div>
+          <div class="watermark">RNDM·USD · ∑ ENTROPY</div>
+        </main>
+      </div>
+
+      <!-- ============ STATUS BAR ============ -->
+      <footer class="statusbar" data-reveal>
+        <div class="status-left">
+          <span class="st"><i class="st-led"></i>РЕЖИМ <b id="st-regime">—</b></span>
+          <span class="st-dot"></span>
+          <span class="st">СКОРОСТЬ <b id="st-tps">0</b> тик/с</span>
+          <span class="st-dot"></span>
+          <span class="st">ТИКОВ <b id="st-ticks">0</b></span>
+          <span class="st-dot"></span>
+          <span class="st">СВЕЧЕЙ <b id="st-candles">0</b></span>
+        </div>
+        <div class="status-right">
+          <span class="st">ТФ <b id="st-tf">1s</b></span>
+          <span class="st-dot"></span>
+          <span class="st">ЛИНИЙ <b id="st-draw">0</b></span>
+          <span class="st-dot"></span>
+          <span class="st" id="st-clock-wrap">⌁ <b id="st-clock">—</b></span>
+          <span class="st-dot"></span>
+          <span class="st save" id="st-save"><i class="save-led"></i>СОХРАНЕНО</span>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+test/verify.mjs
+.playwright-mcp/
+verify-*.png
+*.log

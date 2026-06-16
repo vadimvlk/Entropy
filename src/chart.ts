@@ -1,0 +1,655 @@
+// Chart controller: wraps TradingView Lightweight Charts (v5). Owns the price
+// series, a volume pane, timeframe + chart-type switching, light/dark theming,
+// the live tick update path, drawing tools (horizontal/vertical lines, a
+// draggable Fibonacci tool), crosshair/legend wiring and zoom.
+
+import {
+  createChart,
+  CandlestickSeries,
+  LineSeries,
+  AreaSeries,
+  HistogramSeries,
+  CrosshairMode,
+  LineStyle,
+  ColorType,
+  type IChartApi,
+  type ISeriesApi,
+  type IPriceLine,
+  type Time,
+  type UTCTimestamp,
+  type MouseEventParams,
+  type SeriesType,
+  type DeepPartial,
+  type ChartOptions,
+} from 'lightweight-charts';
+import { aggregate, lastGroup, type Candle, type TfSeconds } from './engine';
+import { VerticalLine } from './verticalLine';
+import { FibTool, type FibColors } from './fib';
+import { loadDrawings, saveDrawings, clearDrawings, type Drawings } from './storage';
+
+export type ChartType = 'candles' | 'line' | 'area';
+export type Tool = 'cursor' | 'crosshair' | 'hline' | 'vline' | 'fib' | 'erase';
+export type Theme = 'dark' | 'light';
+
+interface Palette {
+  up: string;
+  down: string;
+  line: string;
+  areaTop: string;
+  areaBottom: string;
+  grid: string;
+  border: string;
+  text: string;
+  crosshair: string;
+  crosshairLabel: string;
+  hline: string;
+  vline: string;
+  bg: string;
+  volUp: string;
+  volDown: string;
+  fib: FibColors;
+}
+
+const PALETTES: Record<Theme, Palette> = {
+  dark: {
+    up: '#22d39a',
+    down: '#ff4d6d',
+    line: '#4ee6c4',
+    areaTop: 'rgba(78, 230, 196, 0.30)',
+    areaBottom: 'rgba(78, 230, 196, 0.0)',
+    grid: 'rgba(255, 255, 255, 0.035)',
+    border: 'rgba(255, 255, 255, 0.08)',
+    text: '#8b97ab',
+    crosshair: 'rgba(120, 162, 255, 0.55)',
+    crosshairLabel: '#1b2436',
+    hline: 'rgba(255, 191, 73, 0.9)',
+    vline: 'rgba(120, 162, 255, 0.85)',
+    bg: '#0a0e16',
+    volUp: 'rgba(34, 211, 154, 0.45)',
+    volDown: 'rgba(255, 77, 109, 0.45)',
+    fib: {
+      lines: ['#ff5c7a', '#ffbf49', '#4ee6c4', '#78a2ff'],
+      fills: ['rgba(255,92,122,0.07)', 'rgba(255,191,73,0.07)', 'rgba(78,230,196,0.07)'],
+      text: '#e8eef7',
+    },
+  },
+  light: {
+    up: '#0f9d6b',
+    down: '#e0245e',
+    line: '#0d9488',
+    areaTop: 'rgba(13, 148, 136, 0.22)',
+    areaBottom: 'rgba(13, 148, 136, 0.0)',
+    grid: 'rgba(15, 23, 42, 0.06)',
+    border: 'rgba(15, 23, 42, 0.14)',
+    text: '#5a6678',
+    crosshair: 'rgba(40, 70, 130, 0.5)',
+    crosshairLabel: '#33415c',
+    hline: 'rgba(217, 119, 6, 0.95)',
+    vline: 'rgba(59, 99, 200, 0.85)',
+    bg: '#ffffff',
+    volUp: 'rgba(15, 157, 107, 0.5)',
+    volDown: 'rgba(224, 36, 94, 0.5)',
+    fib: {
+      lines: ['#e0245e', '#d97706', '#0d9488', '#3b63c8'],
+      fills: ['rgba(224,36,94,0.07)', 'rgba(217,119,6,0.07)', 'rgba(13,148,136,0.07)'],
+      text: '#0e1420',
+    },
+  },
+};
+
+export interface ChartCallbacks {
+  onBar?: (bar: Candle | null, isLatest: boolean) => void;
+  onDrawingsChanged?: (counts: { h: number; v: number; fib: number }) => void;
+}
+
+const DEFAULT_BAR_SPACING = 9;
+
+export class ChartController {
+  private container: HTMLElement;
+  private chart: IChartApi;
+  private series!: ISeriesApi<SeriesType>;
+  private volumeSeries!: ISeriesApi<'Histogram'>;
+  private type: ChartType = 'candles';
+  private tf: TfSeconds = 1;
+  private base: Candle[] = [];
+  private tool: Tool = 'cursor';
+  private magnet = false;
+  private theme: Theme = 'dark';
+  private colors: Palette = PALETTES.dark;
+
+  // Drawings stored as plain data; rendered objects are recreated per series.
+  private hlinePrices: number[] = [];
+  private vlineTimes: number[] = [];
+  private fibPrices: [number, number] | null = null;
+  private priceLineObjs: IPriceLine[] = [];
+  private vlineObjs: VerticalLine[] = [];
+  private fib: FibTool | null = null;
+
+  // Fib drag state.
+  private drag: { kind: 'create' | 'move'; grab: 'a' | 'b' | 'body'; lastPrice: number } | null = null;
+
+  private hovering = false;
+  private barSpacing = DEFAULT_BAR_SPACING;
+  private cb: ChartCallbacks;
+
+  constructor(container: HTMLElement, cb: ChartCallbacks = {}, theme: Theme = 'dark') {
+    this.cb = cb;
+    this.container = container;
+    this.theme = theme;
+    this.colors = PALETTES[theme];
+
+    const options: DeepPartial<ChartOptions> = {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: this.colors.bg },
+        textColor: this.colors.text,
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 11,
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: this.colors.grid },
+        horzLines: { color: this.colors.grid },
+      },
+      crosshair: this.crosshairOptions(),
+      rightPriceScale: {
+        borderColor: this.colors.border,
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+        entireTextOnly: true,
+      },
+      timeScale: {
+        borderColor: this.colors.border,
+        timeVisible: true,
+        secondsVisible: true,
+        rightOffset: 6,
+        barSpacing: this.barSpacing,
+      },
+      handleScroll: true,
+      handleScale: true,
+    };
+    this.chart = createChart(container, options);
+
+    const d = loadDrawings();
+    this.hlinePrices = d.hlines.slice();
+    this.vlineTimes = d.vlines.slice();
+    this.fibPrices = d.fib ? [d.fib[0], d.fib[1]] : null;
+
+    this.createSeries();
+    this.createVolume();
+
+    this.chart.subscribeClick((p) => this.onClick(p));
+    this.chart.subscribeCrosshairMove((p) => this.onCrosshair(p));
+    // Raw pointer handling for the draggable Fibonacci tool (capture phase so
+    // we can intercept before the chart starts panning).
+    this.container.addEventListener('pointerdown', this.onPointerDown, true);
+  }
+
+  private crosshairOptions() {
+    return {
+      mode: CrosshairMode.Normal,
+      vertLine: {
+        color: this.colors.crosshair,
+        width: 1 as const,
+        style: LineStyle.LargeDashed,
+        labelBackgroundColor: this.colors.crosshairLabel,
+      },
+      horzLine: {
+        color: this.colors.crosshair,
+        width: 1 as const,
+        style: LineStyle.LargeDashed,
+        labelBackgroundColor: this.colors.crosshairLabel,
+      },
+    };
+  }
+
+  // ---- Series lifecycle ----
+
+  private createSeries(): void {
+    const priceFormat = { type: 'price' as const, precision: 2, minMove: 0.01 };
+    if (this.type === 'candles') {
+      this.series = this.chart.addSeries(CandlestickSeries, {
+        upColor: this.colors.up,
+        downColor: this.colors.down,
+        borderUpColor: this.colors.up,
+        borderDownColor: this.colors.down,
+        wickUpColor: this.colors.up,
+        wickDownColor: this.colors.down,
+        priceFormat,
+      });
+    } else if (this.type === 'line') {
+      this.series = this.chart.addSeries(LineSeries, { color: this.colors.line, lineWidth: 2, priceFormat });
+    } else {
+      this.series = this.chart.addSeries(AreaSeries, {
+        lineColor: this.colors.line,
+        topColor: this.colors.areaTop,
+        bottomColor: this.colors.areaBottom,
+        lineWidth: 2,
+        priceFormat,
+      });
+    }
+  }
+
+  private createVolume(): void {
+    this.volumeSeries = this.chart.addSeries(
+      HistogramSeries,
+      { priceFormat: { type: 'volume' }, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false },
+      1, // separate pane below the price pane
+    );
+    this.volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0 } });
+    const panes = this.chart.panes();
+    if (panes.length > 1) {
+      panes[0].setStretchFactor(5);
+      panes[1].setStretchFactor(1);
+    }
+  }
+
+  private applySeriesColors(): void {
+    if (this.type === 'candles') {
+      this.series.applyOptions({
+        upColor: this.colors.up,
+        downColor: this.colors.down,
+        borderUpColor: this.colors.up,
+        borderDownColor: this.colors.down,
+        wickUpColor: this.colors.up,
+        wickDownColor: this.colors.down,
+      });
+    } else if (this.type === 'line') {
+      this.series.applyOptions({ color: this.colors.line });
+    } else {
+      this.series.applyOptions({ lineColor: this.colors.line, topColor: this.colors.areaTop, bottomColor: this.colors.areaBottom });
+    }
+  }
+
+  private toSeriesData(candles: Candle[]): any[] {
+    if (this.type === 'candles') {
+      return candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close }));
+    }
+    return candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.close }));
+  }
+
+  private toSeriesPoint(c: Candle): any {
+    if (this.type === 'candles') {
+      return { time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close };
+    }
+    return { time: c.time as UTCTimestamp, value: c.close };
+  }
+
+  private toVolumeData(candles: Candle[]): any[] {
+    return candles.map((c) => ({
+      time: c.time as UTCTimestamp,
+      value: c.volume,
+      color: c.close >= c.open ? this.colors.volUp : this.colors.volDown,
+    }));
+  }
+
+  private toVolumePoint(c: Candle): any {
+    return { time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? this.colors.volUp : this.colors.volDown };
+  }
+
+  /** Full rebuild of the visible series (after init / timeframe / type change). */
+  setBase(base: Candle[], resetView = true): void {
+    this.base = base;
+    const agg = aggregate(base, this.tf);
+    this.series.setData(this.toSeriesData(agg));
+    this.volumeSeries.setData(this.toVolumeData(agg));
+    this.renderDrawings();
+    if (resetView) this.showRecent(agg.length);
+    this.emitLatest();
+  }
+
+  private showRecent(n: number): void {
+    if (n <= 0) return;
+    const span = Math.min(n, 150);
+    this.chart.timeScale().setVisibleLogicalRange({ from: n - span, to: n + 6 });
+  }
+
+  /** Live per-tick update of the latest aggregated bar. */
+  updateLive(base: Candle[]): void {
+    this.base = base;
+    const g = lastGroup(base, this.tf);
+    if (!g) return;
+    this.series.update(this.toSeriesPoint(g));
+    this.volumeSeries.update(this.toVolumePoint(g));
+    if (!this.hovering) this.cb.onBar?.(g, true);
+    for (const v of this.vlineObjs) v.updateAllViews();
+    this.fib?.updateAllViews();
+  }
+
+  private emitLatest(): void {
+    this.cb.onBar?.(lastGroup(this.base, this.tf), true);
+  }
+
+  // ---- Theme ----
+
+  setTheme(theme: Theme): void {
+    if (theme === this.theme) return;
+    this.theme = theme;
+    this.colors = PALETTES[theme];
+    this.chart.applyOptions({
+      layout: { background: { type: ColorType.Solid, color: this.colors.bg }, textColor: this.colors.text },
+      grid: { vertLines: { color: this.colors.grid }, horzLines: { color: this.colors.grid } },
+      crosshair: this.crosshairOptions(),
+      rightPriceScale: { borderColor: this.colors.border },
+      timeScale: { borderColor: this.colors.border },
+    });
+    this.applySeriesColors();
+    this.volumeSeries.setData(this.toVolumeData(aggregate(this.base, this.tf)));
+    this.renderDrawings();
+  }
+
+  getTheme(): Theme {
+    return this.theme;
+  }
+
+  // ---- Timeframe / type switching ----
+
+  setTimeframe(tf: TfSeconds): void {
+    if (tf === this.tf) return;
+    this.tf = tf;
+    this.chart.timeScale().applyOptions({ secondsVisible: tf < 60 });
+    this.setBase(this.base, true);
+  }
+
+  getTimeframe(): TfSeconds {
+    return this.tf;
+  }
+
+  setType(type: ChartType): void {
+    if (type === this.type) return;
+    this.type = type;
+    // Recreate the price series; drawings re-render against the new one.
+    this.priceLineObjs = [];
+    for (const v of this.vlineObjs) this.series.detachPrimitive(v);
+    this.vlineObjs = [];
+    if (this.fib) {
+      this.series.detachPrimitive(this.fib);
+      this.fib = null;
+    }
+    this.chart.removeSeries(this.series);
+    this.createSeries();
+    this.setBase(this.base, false);
+  }
+
+  getType(): ChartType {
+    return this.type;
+  }
+
+  // ---- Tools ----
+
+  setTool(tool: Tool): void {
+    this.tool = tool;
+    this.magnet = tool === 'crosshair';
+    this.chart.applyOptions({ crosshair: { mode: this.magnet ? CrosshairMode.Magnet : CrosshairMode.Normal } });
+  }
+
+  getTool(): Tool {
+    return this.tool;
+  }
+
+  isMagnet(): boolean {
+    return this.magnet;
+  }
+
+  private onClick(p: MouseEventParams): void {
+    if (!p.point) return;
+    if (this.tool === 'hline') {
+      const price = this.series.coordinateToPrice(p.point.y);
+      if (price === null) return;
+      this.hlinePrices.push(price as number);
+      this.persistAndRenderDrawings();
+    } else if (this.tool === 'vline') {
+      const t = this.timeAtClick(p);
+      if (t === null) return;
+      this.vlineTimes.push(t);
+      this.persistAndRenderDrawings();
+    } else if (this.tool === 'erase') {
+      this.eraseNear(p);
+    }
+  }
+
+  private timeAtClick(p: MouseEventParams): number | null {
+    if (typeof p.time === 'number') return p.time as number;
+    if (!p.point) return null;
+    const t = this.chart.timeScale().coordinateToTime(p.point.x);
+    if (typeof t === 'number') return t as number;
+    if (p.logical !== undefined && this.base.length) {
+      const data = aggregate(this.base, this.tf);
+      if (data.length) {
+        const lastT = data[data.length - 1].time;
+        const steps = Math.round((p.logical as number) - (data.length - 1));
+        return lastT + steps * this.tf;
+      }
+    }
+    return null;
+  }
+
+  private eraseNear(p: MouseEventParams): void {
+    if (!p.point) return;
+    const THRESH = 7;
+    for (let i = 0; i < this.hlinePrices.length; i++) {
+      const y = this.series.priceToCoordinate(this.hlinePrices[i]);
+      if (y !== null && Math.abs((y as number) - p.point.y) <= THRESH) {
+        this.hlinePrices.splice(i, 1);
+        this.persistAndRenderDrawings();
+        return;
+      }
+    }
+    for (let i = 0; i < this.vlineTimes.length; i++) {
+      const x = this.chart.timeScale().timeToCoordinate(this.vlineTimes[i] as UTCTimestamp);
+      if (x !== null && Math.abs((x as number) - p.point.x) <= THRESH) {
+        this.vlineTimes.splice(i, 1);
+        this.persistAndRenderDrawings();
+        return;
+      }
+    }
+    // Fib: erase if clicking near any of its level lines.
+    if (this.fib && this.hitTestFib(p.point.y)) {
+      this.removeFib();
+      this.persistAndRenderDrawings();
+    }
+  }
+
+  clearDrawings(): void {
+    this.hlinePrices = [];
+    this.vlineTimes = [];
+    this.removeFib();
+    this.fibPrices = null;
+    clearDrawings();
+    this.renderDrawings();
+    this.cb.onDrawingsChanged?.({ h: 0, v: 0, fib: 0 });
+  }
+
+  private persistAndRenderDrawings(): void {
+    const d: Drawings = { hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibPrices };
+    saveDrawings(d);
+    this.renderDrawings();
+    this.emitDrawingCounts();
+  }
+
+  /** Persist only (drawings already rendered live, e.g. after a fib drag). */
+  private persistDrawings(): void {
+    saveDrawings({ hlines: this.hlinePrices, vlines: this.vlineTimes, fib: this.fibPrices });
+    this.emitDrawingCounts();
+  }
+
+  private emitDrawingCounts(): void {
+    this.cb.onDrawingsChanged?.({ h: this.hlinePrices.length, v: this.vlineTimes.length, fib: this.fibPrices ? 1 : 0 });
+  }
+
+  private renderDrawings(): void {
+    // Horizontal price lines.
+    for (const pl of this.priceLineObjs) this.series.removePriceLine(pl);
+    this.priceLineObjs = this.hlinePrices.map((price) =>
+      this.series.createPriceLine({
+        price,
+        color: this.colors.hline,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '',
+      }),
+    );
+    // Vertical lines.
+    for (const v of this.vlineObjs) this.series.detachPrimitive(v);
+    this.vlineObjs = this.vlineTimes.map((t) => {
+      const v = new VerticalLine(t as UTCTimestamp as Time, this.colors.vline);
+      this.series.attachPrimitive(v);
+      return v;
+    });
+    // Fibonacci.
+    if (this.fib) {
+      this.series.detachPrimitive(this.fib);
+      this.fib = null;
+    }
+    if (this.fibPrices) {
+      this.fib = new FibTool(this.fibPrices[0], this.fibPrices[1], this.colors.fib);
+      this.series.attachPrimitive(this.fib);
+    }
+  }
+
+  private removeFib(): void {
+    if (this.fib) {
+      this.series.detachPrimitive(this.fib);
+      this.fib = null;
+    }
+    this.fibPrices = null;
+  }
+
+  drawingCounts(): { h: number; v: number; fib: number } {
+    return { h: this.hlinePrices.length, v: this.vlineTimes.length, fib: this.fibPrices ? 1 : 0 };
+  }
+
+  // ---- Fibonacci drag interaction ----
+
+  private localY(clientY: number): number {
+    return clientY - this.container.getBoundingClientRect().top;
+  }
+
+  private hitTestFib(y: number): 'a' | 'b' | 'body' | null {
+    if (!this.fib) return null;
+    const a = this.series.priceToCoordinate(this.fib.priceA);
+    const b = this.series.priceToCoordinate(this.fib.priceB);
+    if (a === null || b === null) return null;
+    const T = 6;
+    if (Math.abs((a as number) - y) <= T) return 'a';
+    if (Math.abs((b as number) - y) <= T) return 'b';
+    const top = Math.min(a as number, b as number);
+    const bot = Math.max(a as number, b as number);
+    if (y > top && y < bot) return 'body';
+    return null;
+  }
+
+  private onPointerDown = (e: PointerEvent): void => {
+    if (e.button !== 0) return;
+    if (this.tool !== 'fib' && this.tool !== 'cursor') return; // other tools use subscribeClick
+    const y = this.localY(e.clientY);
+    const price = this.series.coordinateToPrice(y);
+    if (price === null) return;
+    const p = price as number;
+
+    const hit = this.hitTestFib(y);
+    if (hit) {
+      this.drag = { kind: 'move', grab: hit, lastPrice: p };
+      this.beginDrag(e);
+    } else if (this.tool === 'fib' && !this.fib) {
+      this.fibPrices = [p, p];
+      this.fib = new FibTool(p, p, this.colors.fib);
+      this.series.attachPrimitive(this.fib);
+      this.drag = { kind: 'create', grab: 'b', lastPrice: p };
+      this.beginDrag(e);
+    }
+    // Otherwise let the chart handle the event (pan / crosshair).
+  };
+
+  private beginDrag(e: PointerEvent): void {
+    this.chart.applyOptions({ handleScroll: false, handleScale: false });
+    window.addEventListener('pointermove', this.onPointerMove, true);
+    window.addEventListener('pointerup', this.onPointerUp, true);
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (!this.drag || !this.fib) return;
+    const price = this.series.coordinateToPrice(this.localY(e.clientY));
+    if (price === null) return;
+    const p = price as number;
+    if (this.drag.grab === 'a') this.fib.priceA = p;
+    else if (this.drag.grab === 'b') this.fib.priceB = p;
+    else {
+      const d = p - this.drag.lastPrice;
+      this.fib.priceA += d;
+      this.fib.priceB += d;
+    }
+    this.drag.lastPrice = p;
+    this.fibPrices = [this.fib.priceA, this.fib.priceB];
+    this.fib.setPrices(this.fib.priceA, this.fib.priceB);
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    if (!this.drag) return;
+    // A plain click while creating → give the fib a sensible default height.
+    if (this.drag.kind === 'create' && this.fib && Math.abs(this.fib.priceA - this.fib.priceB) < 1e-9) {
+      const a = this.fib.priceA;
+      const range = Math.max(Math.abs(a) * 0.01, 1);
+      this.fib.setPrices(a, a + range);
+      this.fibPrices = [a, a + range];
+    }
+    this.drag = null;
+    this.chart.applyOptions({ handleScroll: true, handleScale: true });
+    window.removeEventListener('pointermove', this.onPointerMove, true);
+    window.removeEventListener('pointerup', this.onPointerUp, true);
+    this.persistDrawings();
+    e.stopPropagation();
+  };
+
+  // ---- Crosshair / legend ----
+
+  private onCrosshair(p: MouseEventParams): void {
+    if (!p.point) {
+      this.hovering = false;
+      this.emitLatest();
+      return;
+    }
+    this.hovering = true;
+    if (p.time === undefined) return;
+    const sd = p.seriesData.get(this.series);
+    if (!sd) return;
+    const anySd = sd as any;
+    const vd = p.seriesData.get(this.volumeSeries) as any;
+    const vol = vd && typeof vd.value === 'number' ? vd.value : 0;
+    const bar: Candle =
+      'open' in anySd
+        ? { time: p.time as number, open: anySd.open, high: anySd.high, low: anySd.low, close: anySd.close, volume: vol }
+        : { time: p.time as number, open: anySd.value, high: anySd.value, low: anySd.value, close: anySd.value, volume: vol };
+    this.cb.onBar?.(bar, false);
+  }
+
+  // ---- Zoom / navigation ----
+
+  fit(): void {
+    this.chart.timeScale().fitContent();
+  }
+
+  zoomIn(): void {
+    this.barSpacing = Math.min(this.barSpacing * 1.35, 80);
+    this.chart.timeScale().applyOptions({ barSpacing: this.barSpacing });
+  }
+
+  zoomOut(): void {
+    this.barSpacing = Math.max(this.barSpacing / 1.35, 0.8);
+    this.chart.timeScale().applyOptions({ barSpacing: this.barSpacing });
+  }
+
+  resetView(): void {
+    this.barSpacing = DEFAULT_BAR_SPACING;
+    this.chart.timeScale().applyOptions({ barSpacing: this.barSpacing });
+    this.showRecent(aggregate(this.base, this.tf).length);
+  }
+
+  scrollToRealtime(): void {
+    this.chart.timeScale().scrollToRealTime();
+  }
+}
