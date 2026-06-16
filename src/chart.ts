@@ -121,7 +121,8 @@ export class ChartController {
   private container: HTMLElement;
   private chart: IChartApi;
   private series!: ISeriesApi<SeriesType>;
-  private volumeSeries!: ISeriesApi<'Histogram'>;
+  private volumeSeries: ISeriesApi<'Histogram'> | null = null;
+  private volumeVisible = true;
   private type: ChartType = 'candles';
   private tf: TfSeconds = 1;
   private base: Candle[] = [];
@@ -236,26 +237,38 @@ export class ChartController {
   private createSeries(): void {
     const priceFormat = PRICE_FORMAT;
     if (this.type === 'candles') {
-      this.series = this.chart.addSeries(CandlestickSeries, {
-        upColor: this.colors.up,
-        downColor: this.colors.down,
-        borderUpColor: this.colors.up,
-        borderDownColor: this.colors.down,
-        wickUpColor: this.colors.up,
-        wickDownColor: this.colors.down,
-        priceFormat,
-      });
+      this.series = this.chart.addSeries(
+        CandlestickSeries,
+        {
+          upColor: this.colors.up,
+          downColor: this.colors.down,
+          borderUpColor: this.colors.up,
+          borderDownColor: this.colors.down,
+          wickUpColor: this.colors.up,
+          wickDownColor: this.colors.down,
+          priceFormat,
+        },
+        0,
+      );
     } else if (this.type === 'line') {
-      this.series = this.chart.addSeries(LineSeries, { color: this.colors.line, lineWidth: 2, priceFormat });
+      this.series = this.chart.addSeries(LineSeries, { color: this.colors.line, lineWidth: 2, priceFormat }, 0);
     } else {
-      this.series = this.chart.addSeries(AreaSeries, {
-        lineColor: this.colors.line,
-        topColor: this.colors.areaTop,
-        bottomColor: this.colors.areaBottom,
-        lineWidth: 2,
-        priceFormat,
-      });
+      this.series = this.chart.addSeries(
+        AreaSeries,
+        {
+          lineColor: this.colors.line,
+          topColor: this.colors.areaTop,
+          bottomColor: this.colors.areaBottom,
+          lineWidth: 2,
+          priceFormat,
+        },
+        0,
+      );
     }
+    // Keep the main pane alive even while its series is briefly removed (type
+    // switch). Otherwise the empty pane collapses, the volume pane becomes
+    // pane 0, and the recreated main series overlaps the volume bars.
+    this.chart.panes()[0]?.setPreserveEmptyPane(true);
     this.markersPlugin = createSeriesMarkers(this.series, []);
     this.applyMarkers();
     this.hilo = new HiLoLabels(this.colors.hilo);
@@ -263,17 +276,46 @@ export class ChartController {
   }
 
   private createVolume(): void {
+    if (this.volumeSeries) return;
     this.volumeSeries = this.chart.addSeries(
       HistogramSeries,
       { priceFormat: { type: 'volume' }, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false },
       1, // separate pane below the price pane
     );
     this.volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0 } });
+    this.volumeSeries.setData(this.toVolumeData(this.agg));
+    this.applyVolumeStretch();
+  }
+
+  private applyVolumeStretch(): void {
     const panes = this.chart.panes();
     if (panes.length > 1) {
       panes[0].setStretchFactor(5);
       panes[1].setStretchFactor(1);
     }
+  }
+
+  private removeVolume(): void {
+    if (!this.volumeSeries) return;
+    this.chart.removeSeries(this.volumeSeries);
+    this.volumeSeries = null; // its (now empty, non-preserved) pane auto-collapses
+  }
+
+  /** Show / hide the volume pane (chart uses full height when hidden). */
+  setVolumeVisible(visible: boolean): void {
+    if (visible === this.volumeVisible) return;
+    this.volumeVisible = visible;
+    if (visible) this.createVolume();
+    else this.removeVolume();
+  }
+
+  toggleVolume(): boolean {
+    this.setVolumeVisible(!this.volumeVisible);
+    return this.volumeVisible;
+  }
+
+  isVolumeVisible(): boolean {
+    return this.volumeVisible;
   }
 
   private applySeriesColors(): void {
@@ -325,7 +367,10 @@ export class ChartController {
     const agg = aggregate(base, this.tf);
     this.agg = agg;
     this.series.setData(this.toSeriesData(agg));
-    this.volumeSeries.setData(this.toVolumeData(agg));
+    if (this.volumeSeries) {
+      this.volumeSeries.setData(this.toVolumeData(agg));
+      this.applyVolumeStretch();
+    }
     this.renderDrawings();
     this.applyMarkers();
     if (resetView) this.showRecent(agg.length);
@@ -345,7 +390,7 @@ export class ChartController {
     const g = lastGroup(base, this.tf);
     if (!g) return;
     this.series.update(this.toSeriesPoint(g));
-    this.volumeSeries.update(this.toVolumePoint(g));
+    if (this.volumeSeries) this.volumeSeries.update(this.toVolumePoint(g));
     // Keep the aggregated cache tail in sync (used for visible high/low).
     const n = this.agg.length;
     if (n && this.agg[n - 1].time === g.time) this.agg[n - 1] = g;
@@ -402,7 +447,7 @@ export class ChartController {
       timeScale: { borderColor: this.colors.border },
     });
     this.applySeriesColors();
-    this.volumeSeries.setData(this.toVolumeData(aggregate(this.base, this.tf)));
+    this.volumeSeries?.setData(this.toVolumeData(aggregate(this.base, this.tf)));
     this.renderDrawings();
     this.applyMarkers();
     this.hilo?.setColors(this.colors.hilo);
@@ -793,7 +838,7 @@ export class ChartController {
     const sd = p.seriesData.get(this.series);
     if (!sd) return;
     const anySd = sd as any;
-    const vd = p.seriesData.get(this.volumeSeries) as any;
+    const vd = this.volumeSeries ? (p.seriesData.get(this.volumeSeries) as any) : null;
     const vol = vd && typeof vd.value === 'number' ? vd.value : 0;
     const bar: Candle =
       'open' in anySd

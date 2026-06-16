@@ -51,6 +51,7 @@ function boot(): void {
   const liveLabel = $('#live-label');
   const playBtn = $('#btn-playpause');
   const themeBtn = $('#btn-theme');
+  const volBtn = $('#btn-vol');
 
   const stRegime = $('#st-regime');
   const stTps = $('#st-tps');
@@ -153,6 +154,10 @@ function boot(): void {
   if (prefs?.speed && SPEED_NAMES.includes(prefs.speed)) selSpeed.value = prefs.speed;
   if (prefs?.vol && VOL_NAMES.includes(prefs.vol)) selVol.value = prefs.vol;
   applyMode((prefs?.mode as RegimeMode) === 'manual' ? 'manual' : 'auto', false);
+  if (prefs?.showVolume === false) {
+    chart.setVolumeVisible(false);
+    volBtn.classList.remove('is-active');
+  }
 
   refreshPositionLines();
   updateHeader(engine.price);
@@ -173,6 +178,7 @@ function boot(): void {
       mode: engine.getMode(),
       speed: selSpeed.value,
       vol: selVol.value,
+      showVolume: chart.isVolumeVisible(),
     });
   }
 
@@ -383,6 +389,12 @@ function boot(): void {
     const next: Theme = chart.getTheme() === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
     chart.setTheme(next);
+    persistPrefs();
+  });
+
+  volBtn.addEventListener('click', () => {
+    const visible = chart.toggleVolume();
+    volBtn.classList.toggle('is-active', visible);
     persistPrefs();
   });
 
