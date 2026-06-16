@@ -48,6 +48,11 @@
   --glass: rgba(10, 14, 22, 0.72);
   --watermark: rgba(255, 255, 255, 0.045);
   --select-bg: #0c111b;
+
+  /* Market-Maker (violet "manipulation" accent) */
+  --mm: #c061ff;
+  --mm-dim: #7d2bd6;
+  --mm-glow: rgba(192, 97, 255, 0.42);
 }
 
 /* ---------- LIGHT THEME ---------- */
@@ -83,6 +88,10 @@
   --glass: rgba(255, 255, 255, 0.82);
   --watermark: rgba(15, 23, 42, 0.05);
   --select-bg: #ffffff;
+
+  --mm: #8b3df0;
+  --mm-dim: #6d28d9;
+  --mm-glow: rgba(139, 61, 240, 0.3);
 }
 
 /* ---------- ICONS (must come before usage so strokes render) ---------- */
@@ -721,7 +730,17 @@ body::after {
   padding: 12px;
   background: linear-gradient(180deg, var(--panel), var(--panel-2));
   border-left: 1px solid var(--line);
-  overflow-y: auto;
+  overflow: hidden;
+}
+/* tooltips inside the right panel point LEFT (into the chart), not off-screen */
+.orderpanel [data-tip]::after {
+  left: auto;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) translateX(6px);
+}
+.orderpanel [data-tip]:hover::after {
+  transform: translateY(-50%) translateX(0);
 }
 .op-card {
   background: var(--bg-0);
@@ -991,4 +1010,182 @@ body::after {
   :root { --panel-w: 224px; }
   .orderpanel { padding: 9px; gap: 8px; }
   .op-card { padding: 10px; }
+}
+
+/* ============================ MARKET-MAKER MODE ============================ */
+.op-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-0);
+  flex-shrink: 0;
+}
+.op-toolbar-lbl {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--text-mid);
+  transition: color 0.2s ease;
+}
+.op-toolbar-lbl small {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 1.5px;
+  color: var(--text-lo);
+}
+.orderpanel.is-mm .op-toolbar-lbl {
+  color: var(--mm);
+}
+.orderpanel.is-mm .op-toolbar {
+  border-color: color-mix(in srgb, var(--mm) 40%, transparent);
+  box-shadow: 0 0 16px -6px var(--mm-glow);
+}
+
+/* pill switch */
+.mm-switch {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+.mm-track {
+  display: block;
+  width: 46px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--hover);
+  border: 1px solid var(--line-2);
+  transition: background 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+.mm-knob {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-lo);
+  margin: 2px;
+  transform: translateX(0);
+  box-shadow: 0 1px 3px var(--inset);
+  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s;
+}
+.mm-switch[aria-checked='true'] .mm-track {
+  background: linear-gradient(90deg, var(--mm-dim), var(--mm));
+  border-color: color-mix(in srgb, var(--mm) 40%, transparent);
+  box-shadow: 0 0 14px -3px var(--mm-glow);
+}
+.mm-switch[aria-checked='true'] .mm-knob {
+  transform: translateX(22px);
+  background: #fff;
+}
+.mm-switch:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* flip stage */
+.mm-flip {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  perspective: 1400px;
+}
+.mm-flip-inner {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transition: transform 0.52s cubic-bezier(0.7, 0, 0.2, 1);
+  will-change: transform;
+}
+.orderpanel.is-mm .mm-flip-inner {
+  transform: rotateY(180deg);
+}
+.mm-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.mm-back {
+  transform: rotateY(180deg);
+}
+
+/* back-face "manipulation" mood — scoped accent override (violet) */
+.mm-back {
+  --accent: var(--mm);
+  --accent-dim: var(--mm-dim);
+  --accent-glow: var(--mm-glow);
+  background: radial-gradient(120% 80% at 50% -10%, color-mix(in srgb, var(--mm) 9%, transparent), transparent);
+  border-radius: var(--radius);
+}
+.mm-back .op-card {
+  box-shadow: inset 3px 0 0 var(--mm);
+  background: color-mix(in srgb, var(--mm) 5%, var(--bg-0));
+}
+.mm-back .op-buttons {
+  box-shadow: 0 0 18px -4px var(--mm-glow);
+  border-top: 1px solid color-mix(in srgb, var(--mm) 40%, transparent);
+  padding-top: 12px;
+}
+.mm-lev {
+  color: var(--mm);
+  border-color: color-mix(in srgb, var(--mm) 30%, transparent);
+  background: color-mix(in srgb, var(--mm) 8%, transparent);
+}
+.mm-balance {
+  color: var(--mm);
+  text-shadow: 0 0 18px var(--mm-glow);
+  line-height: 1;
+}
+.mm-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--mm);
+  background: color-mix(in srgb, var(--mm) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mm) 35%, transparent);
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+.mm-note {
+  margin-top: 9px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.3px;
+  color: var(--text-lo);
+  text-align: center;
+}
+
+/* scanline texture on the MM face */
+.mm-back::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, var(--watermark) 3px 4px);
+  opacity: 0.5;
+  border-radius: var(--radius);
+}
+
+.no-anim .mm-flip-inner {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-flip-inner {
+    transition: none;
+  }
+  .mm-back::before {
+    display: none;
+  }
 }

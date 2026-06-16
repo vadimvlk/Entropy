@@ -220,6 +220,23 @@ export class Engine {
     this.saveNow();
   }
 
+  /**
+   * Market-Maker mode: inject one extra tick that nudges the price by `delta`
+   * dollars (positive = up, negative = down). The random generator keeps
+   * running on its own timer — this is an additional manual tick on top.
+   */
+  nudge(delta: number): void {
+    if (!Number.isFinite(delta) || delta === 0) return;
+    const np = this.price + delta;
+    this.price = np < MIN_PRICE ? MIN_PRICE : np;
+    this.tickCount++;
+    this.commitTick();
+    this.trackRate();
+    const last = this.base[this.base.length - 1];
+    this.cb.onTick?.(this.price, last);
+    this.scheduleSave();
+  }
+
   private nextDelay(): number {
     let d = uniform(this.regime.minDelay, this.regime.maxDelay) / this.speedMultiplier;
     return clamp(d, 12, 5000);

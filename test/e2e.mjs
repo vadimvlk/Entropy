@@ -102,6 +102,30 @@ await page.locator('#mode-group .seg-btn[data-mode="manual"]').click();
 await page.waitForTimeout(150);
 ok('manual controls visible', await page.locator('#manual-controls').isVisible());
 
+// Market-Maker mode: flip, ∞ balance, PUMP nudges the price, flip back
+await page.locator('#mm-toggle').click();
+await page.waitForTimeout(600);
+ok('MM: panel flips (is-mm)', await page.evaluate(() => document.querySelector('.orderpanel').classList.contains('is-mm')));
+ok('MM: balance shows ∞', (await page.locator('#mm-balance').textContent()).includes('∞'));
+await page.locator('#btn-playpause').click(); // pause so only the nudge moves price
+await page.waitForTimeout(200);
+await page.locator('.mm-back .qty-presets button[data-impact="5"]').click();
+await page.waitForTimeout(120);
+const mmP0 = Number((await page.locator('#mm-mark').textContent()).replace(/[^0-9.]/g, ''));
+await page.locator('#mm-buy').click();
+await page.waitForTimeout(150);
+const mmP1 = Number((await page.locator('#mm-mark').textContent()).replace(/[^0-9.]/g, ''));
+ok('MM: PUMP +$5 moves price up ~5', Math.abs(mmP1 - mmP0 - 5) < 0.06);
+await page.locator('#mm-sell').click();
+await page.waitForTimeout(150);
+const mmP2 = Number((await page.locator('#mm-mark').textContent()).replace(/[^0-9.]/g, ''));
+ok('MM: DUMP -$5 moves price down ~5', Math.abs(mmP2 - mmP1 + 5) < 0.06);
+await page.locator('#btn-playpause').click(); // resume
+await page.waitForTimeout(150);
+await page.locator('#mm-toggle').click(); // flip back to trading
+await page.waitForTimeout(400);
+ok('MM: flips back to trading', !(await page.evaluate(() => document.querySelector('.orderpanel').classList.contains('is-mm'))));
+
 await page.screenshot({ path: 'verify-11-final.png' });
 ok('no console errors (excluding favicon)', errors.filter((e) => !/favicon/.test(e)).length === 0);
 if (errors.length) console.log('  console errors:', JSON.stringify(errors.slice(0, 5), null, 2));

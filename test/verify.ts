@@ -10,7 +10,7 @@ const mem = new Map<string, string>();
   removeItem: (k: string) => void mem.delete(k),
 };
 
-import { aggregate, lastGroup, type Candle } from '../src/engine';
+import { aggregate, lastGroup, Engine, MIN_PRICE, type Candle } from '../src/engine';
 import { loadState, saveState, compactBase, type PersistedState } from '../src/storage';
 import { FibTool } from '../src/fib';
 import { Account } from '../src/trading';
@@ -138,5 +138,21 @@ check('no liq at 960', acc.liquidateIfNeeded(960) === false);
 check('liquidates at 947', acc.liquidateIfNeeded(947) === true);
 check('after liq: flat & balance > 0', acc.position === 0 && acc.balance > 0);
 
+// --- Market-Maker nudge (manual tick injection) ---
+mem.delete('random-walk-terminal:v1');
+const eng = new Engine();
+eng.init(); // fresh seed: price 1000, one candle
+const t0 = eng.tickCount;
+eng.nudge(5);
+check('nudge +5 → price 1005', approx(eng.price, 1005));
+check('nudge increments tickCount', eng.tickCount === t0 + 1);
+check('nudge folds into candle (close=1005)', approx(eng.base[eng.base.length - 1].close, 1005));
+eng.nudge(-10);
+check('nudge -10 → price 995', approx(eng.price, 995));
+eng.nudge(-1e9);
+check('nudge cannot push price below MIN_PRICE', eng.price === MIN_PRICE);
+eng.nudge(0);
+check('nudge(0) is a no-op for price', eng.price === MIN_PRICE);
+
 console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+process.exit(failed > 0 ? 1 : 0);

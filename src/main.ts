@@ -98,6 +98,17 @@ function boot(): void {
   const btnBuy = $('#btn-buy');
   const btnSell = $('#btn-sell');
 
+  // Market-Maker mode refs
+  const orderpanel = $('.orderpanel');
+  const mmToggle = $('#mm-toggle');
+  const mmImpactInput = $<HTMLInputElement>('#mm-impact-input');
+  const mmMark = $('#mm-mark');
+  const mmDelta = $('#mm-delta');
+  const mmShots = $('#mm-shots');
+  const mmBuy = $('#mm-buy');
+  const mmSell = $('#mm-sell');
+  let mmShotCount = 0;
+
   selSpeed.innerHTML = SPEED_NAMES.map((n) => `<option value="${n}">${SPEED_LABELS[n] ?? n}</option>`).join('');
   selVol.innerHTML = VOL_NAMES.map((n) => `<option value="${n}">${VOL_LABELS[n] ?? n}</option>`).join('');
 
@@ -158,6 +169,11 @@ function boot(): void {
     chart.setVolumeVisible(false);
     volBtn.classList.remove('is-active');
   }
+  if (prefs?.mm) {
+    orderpanel.classList.add('no-anim');
+    setMM(true);
+    requestAnimationFrame(() => orderpanel.classList.remove('no-anim'));
+  }
 
   refreshPositionLines();
   updateHeader(engine.price);
@@ -179,6 +195,7 @@ function boot(): void {
       speed: selSpeed.value,
       vol: selVol.value,
       showVolume: chart.isVolumeVisible(),
+      mm: orderpanel.classList.contains('is-mm'),
     });
   }
 
@@ -282,6 +299,10 @@ function boot(): void {
     ordNotional.textContent = '$' + formatMoney(qty * price);
     ordMargin.textContent = '$' + formatMoney((qty * price) / account.leverage);
     ordMax.textContent = formatQty(v.maxQty) + ' конт.';
+
+    // Market-Maker face — updated every tick so the back stays live while hidden.
+    mmMark.textContent = formatPrice(price);
+    mmDelta.textContent = '±$' + mmImpact().toFixed(1);
   }
 
   function refreshPositionLines(): void {
@@ -332,6 +353,45 @@ function boot(): void {
     updateTrading(engine.price);
     toast(`Позиция закрыта · ${formatSignedMoney(res.realized ?? 0)}`, (res.realized ?? 0) >= 0 ? 'buy' : 'sell');
   });
+
+  // ---- Market-Maker mode ----
+  function mmImpact(): number {
+    const raw = parseFloat(mmImpactInput.value.replace(',', '.'));
+    if (!Number.isFinite(raw)) return 0.1;
+    return Math.max(0.1, roundStep(raw, 0.1));
+  }
+  function setImpact(v: number): void {
+    mmImpactInput.value = Math.max(0.1, roundStep(v, 0.1)).toFixed(1);
+    updateTrading(engine.price);
+  }
+  function injectMM(dir: 'up' | 'down'): void {
+    const amt = mmImpact();
+    engine.nudge(dir === 'up' ? amt : -amt);
+    mmShotCount++;
+    mmShots.textContent = String(mmShotCount);
+    toast(
+      `${dir === 'up' ? '▲ ВВЕРХ' : '▼ ВНИЗ'} ${dir === 'up' ? '+' : '−'}$${amt.toFixed(1)} @ ${formatPrice(engine.price)}`,
+      dir === 'up' ? 'buy' : 'sell',
+    );
+  }
+  function setMM(on: boolean): void {
+    orderpanel.classList.toggle('is-mm', on);
+    mmToggle.setAttribute('aria-checked', String(on));
+    document.querySelector('.mm-front')?.setAttribute('aria-hidden', on ? 'true' : 'false');
+    document.querySelector('.mm-back')?.setAttribute('aria-hidden', on ? 'false' : 'true');
+    updateTrading(engine.price);
+    persistPrefs();
+  }
+
+  $('#mm-minus').addEventListener('click', () => setImpact(mmImpact() - 0.1));
+  $('#mm-plus').addEventListener('click', () => setImpact(mmImpact() + 0.1));
+  mmImpactInput.addEventListener('change', () => setImpact(mmImpact()));
+  $all('.mm-back .qty-presets button').forEach((b) =>
+    b.addEventListener('click', () => setImpact(parseFloat(b.dataset.impact || '1'))),
+  );
+  mmBuy.addEventListener('click', () => injectMM('up'));
+  mmSell.addEventListener('click', () => injectMM('down'));
+  mmToggle.addEventListener('click', () => setMM(!orderpanel.classList.contains('is-mm')));
 
   function setLiveState(running: boolean): void {
     liveLabel.textContent = running ? 'LIVE' : 'PAUSE';
@@ -444,6 +504,8 @@ function boot(): void {
     if (!window.confirm('Сбросить график и счёт? Начнётся новая случайная последовательность, депозит вернётся к $1000.')) return;
     engine.reset();
     account.reset();
+    mmShotCount = 0;
+    mmShots.textContent = '0';
     chart.clearDrawings();
     chart.clearMarkers();
     chart.setPosition(null, null, 'flat');

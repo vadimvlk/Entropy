@@ -180,6 +180,7 @@ export interface Prefs {
   speed?: string;
   vol?: string;
   showVolume?: boolean;
+  mm?: boolean;
 }
 
 const ALLOWED_TF = [1, 5, 15, 60, 300];
@@ -199,6 +200,7 @@ export function loadPrefs(): Prefs | null {
     if (typeof p.speed !== 'string') delete p.speed;
     if (typeof p.vol !== 'string') delete p.vol;
     if (typeof p.showVolume !== 'boolean') delete p.showVolume;
+    if (typeof p.mm !== 'boolean') delete p.mm;
     return p;
   } catch {
     return null;
