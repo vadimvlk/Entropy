@@ -607,9 +607,33 @@ async function boot(): Promise<void> {
     }
   }
   $all('.toolrail .tool[data-tool]').forEach((btn) => {
-    btn.addEventListener('click', () => selectTool(btn.dataset.tool as Tool, btn));
+    btn.addEventListener('click', () => {
+      selectTool(btn.dataset.tool as Tool, btn);
+      closeSheets(); // on mobile: dismiss the tool sheet so the chart is free to draw on
+    });
   });
   $('#btn-clear').addEventListener('click', () => chart.clearDrawings());
+
+  // ---- Mobile sheets: the bottom dock summons the tool rail / order ticket ----
+  const toolrail = $('.toolrail');
+  const scrim = $('#scrim');
+  function closeSheets(): void {
+    orderpanel.classList.remove('sheet-open');
+    toolrail.classList.remove('sheet-open');
+    scrim.classList.remove('show');
+  }
+  function toggleSheet(el: HTMLElement): void {
+    const open = !el.classList.contains('sheet-open');
+    closeSheets();
+    if (open) {
+      el.classList.add('sheet-open');
+      scrim.classList.add('show');
+    }
+  }
+  $('#dock-trade').addEventListener('click', () => toggleSheet(orderpanel));
+  $('#dock-tools').addEventListener('click', () => toggleSheet(toolrail));
+  scrim.addEventListener('click', closeSheets);
+  $all('.sheet-grip').forEach((g) => g.addEventListener('click', closeSheets));
 
   // ---- Zoom (local) ----
   $('#zoom-in').addEventListener('click', () => chart.zoomIn());

@@ -122,7 +122,8 @@
 
       <!-- ============ WORKSPACE ============ -->
       <div class="workspace">
-        <aside class="toolrail" data-reveal>
+        <aside class="toolrail">
+          <button class="sheet-grip" type="button" aria-label="Закрыть инструменты"></button>
           <button class="tool is-active" data-tool="cursor" data-tip="Курсор / перекрестие">
             <svg class="ico" viewBox="0 0 24 24"><path d="M5 3 L19 11 L12.5 12.5 L11 19 Z" class="fill" /></svg>
           </button>
@@ -176,7 +177,8 @@
           <div class="toast" id="toast"></div>
         </main>
 
-        <aside class="orderpanel" data-reveal>
+        <aside class="orderpanel">
+          <button class="sheet-grip" type="button" aria-label="Закрыть панель"></button>
           <div class="op-toolbar">
             <span class="op-toolbar-lbl">MM<small>MARKET MAKER</small></span>
             <button class="mm-switch" id="mm-toggle" role="switch" aria-checked="false" data-tip="Режим маркет-мейкера">
@@ -293,6 +295,19 @@
           <span class="st save" id="st-save"><i class="save-led"></i>СЕРВЕР</span>
         </div>
       </footer>
+
+      <!-- ============ MOBILE DOCK (phones only) ============ -->
+      <nav class="mobile-dock" aria-label="Мобильное управление">
+        <button class="dock-btn" type="button" id="dock-tools">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M4 20 L13 11" /><path d="M14 4 l6 6 -9 9 -6 0 0 -6 z" /></svg>
+          Инструменты
+        </button>
+        <button class="dock-btn dock-trade" type="button" id="dock-trade">
+          <svg class="ico" viewBox="0 0 24 24"><polyline points="3,16 9,10 13,13 21,5" /><polyline points="16,5 21,5 21,10" /></svg>
+          Торговать
+        </button>
+      </nav>
+      <div class="scrim" id="scrim"></div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

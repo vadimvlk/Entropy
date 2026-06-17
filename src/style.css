@@ -1203,3 +1203,203 @@ body::after {
     display: none;
   }
 }
+
+/* ============================ MOBILE LAYOUT (≤ 720px) ============================ */
+/* The desktop is a three-column workspace. On a phone it collapses to a single
+   dominant chart, with the tool rail and the order ticket as slide-up sheets
+   summoned from a bottom dock — the shape a mobile exchange app uses. */
+
+/* Inert on desktop; the media query below switches them on. */
+.mobile-dock { display: none; }
+.sheet-grip { display: none; }
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  background: rgba(3, 6, 12, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.scrim.show { opacity: 1; pointer-events: auto; }
+
+/* Bottom-dock buttons (the dock itself stays display:none until mobile). */
+.dock-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  transition: filter 0.14s ease, transform 0.06s ease;
+}
+.dock-btn .ico {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dock-trade {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dim));
+  border-color: transparent;
+  color: var(--bg-0);
+}
+.dock-btn:active { transform: translateY(1px); }
+
+@media (max-width: 720px) {
+  /* ---- App shell: vertical stack, big chart, status bar dropped ---- */
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+  }
+  .statusbar { display: none; }
+
+  /* ---- Top bar: price on row 1, a scrollable control strip on row 2 ---- */
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    gap: 8px 10px;
+    padding: 9px 12px;
+  }
+  .brand { height: auto; padding-right: 11px; gap: 9px; }
+  .brand-mark { width: 30px; height: 30px; border-radius: 8px; }
+  .brand-mark svg { width: 17px; height: 17px; }
+  .ticker { flex: 1 1 auto; }
+  .ticker-head .live { display: inline-flex; }
+  .price { font-size: 21px; }
+  .change { font-size: 11.5px; }
+
+  .topbar-controls {
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .topbar-controls::-webkit-scrollbar { display: none; }
+  .topbar-controls > * { flex: 0 0 auto; }
+  .seg-btn { padding: 8px 11px; font-size: 12px; }
+
+  /* ---- Workspace: one column = chart. Rail + ticket leave the flow. ---- */
+  .workspace {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+  .legend {
+    top: 8px;
+    left: 8px;
+    gap: 7px 10px;
+    padding: 6px 9px;
+    font-size: 10px;
+    max-width: calc(100% - 16px);
+    flex-wrap: wrap;
+  }
+  .watermark { display: none; }
+
+  /* ---- Shared sheet chrome: a tappable grip that closes the sheet ---- */
+  .sheet-grip {
+    display: block;
+    width: 100%;
+    height: 16px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    flex: 0 0 auto; /* column sheet (orderpanel): fixed height, full width */
+    margin-bottom: 4px;
+  }
+  /* row-wrap sheet (toolrail): the grip takes a full row of its own */
+  .toolrail .sheet-grip { flex-basis: 100%; }
+  .sheet-grip::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 44px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--line-2);
+  }
+
+  /* ---- Tool rail → bottom sheet (tools wrap into rows) ---- */
+  .toolrail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 120;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-content: flex-start;
+    gap: 9px;
+    padding: 10px 16px calc(18px + env(safe-area-inset-bottom));
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -22px 50px -24px #000;
+    max-height: 64dvh;
+    overflow-y: auto;
+    transform: translateY(112%);
+    transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .toolrail.sheet-open { transform: translateY(0); }
+  .tool { width: 46px; height: 46px; border-radius: 11px; }
+  .tool .ico { width: 22px; height: 22px; }
+  .tool.is-active::before { display: none; }
+  .tool-sep { flex: 0 0 100%; width: auto; height: 1px; margin: 5px 6px; }
+
+  /* ---- Order ticket → bottom sheet ---- */
+  .orderpanel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 120;
+    height: 84dvh;
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -22px 50px -24px #000;
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+    transform: translateY(106%);
+    transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .orderpanel.sheet-open { transform: translateY(0); }
+
+  /* ---- Bottom dock ---- */
+  .mobile-dock {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border-top: 1px solid var(--line);
+    z-index: 100;
+  }
+}
