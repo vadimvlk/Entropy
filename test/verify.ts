@@ -21,6 +21,7 @@ import { Db } from '../server/db';
 import { SeriesStore } from '../server/seriesStore';
 import { FibTool } from '../src/fib';
 import { Account } from '../src/trading';
+import { formatClock } from '../src/format';
 
 const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
@@ -281,6 +282,14 @@ eng.nudge(-1e9);
 check('nudge cannot push price below MIN_PRICE', eng.price === MIN_PRICE);
 eng.nudge(0);
 check('nudge(0) is a no-op for price', eng.price === MIN_PRICE);
+
+// ============ clock formatting renders UTC, not local time ============
+// The chart's time axis (lightweight-charts) renders in UTC, so the status
+// clock + OHLC legend must too. These epochs must read the same on any machine
+// regardless of its timezone — a local-time formatter would offset them.
+check('formatClock renders UTC HH:MM:SS', formatClock(Date.UTC(2026, 0, 1, 5, 30, 45)) === '05:30:45');
+check('formatClock zero-pads single digits', formatClock(Date.UTC(2026, 0, 1, 3, 4, 9)) === '03:04:09');
+check('formatClock handles UTC midnight', formatClock(Date.UTC(2026, 5, 17, 0, 0, 0)) === '00:00:00');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -8,7 +8,7 @@ import './style.css';
 import { ChartController, type ChartType, type Tool, type Theme } from './chart';
 import { Account } from './trading';
 import { loadPrefs, savePrefs } from './storage';
-import { formatPrice, formatMoney, formatSignedMoney, formatPct, roundStep, formatQty } from './format';
+import { formatPrice, formatMoney, formatSignedMoney, formatPct, roundStep, formatQty, formatClock } from './format';
 import { MarketClient, type StreamStatus, type TickPayload } from './marketClient';
 import { TF_LABEL, SECOND_TFS, type Candle, type TfSeconds } from '../shared/candles';
 import { SPEED_NAMES, VOL_NAMES } from '../shared/regimes';
@@ -23,12 +23,6 @@ const $all = <T extends HTMLElement = HTMLElement>(sel: string): T[] =>
   Array.from(document.querySelectorAll<T>(sel));
 
 const nfInt = new Intl.NumberFormat('en-US');
-
-function fmtClock(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
 
 const TOOL_HINTS: Partial<Record<Tool, string>> = {
   hline: '◇ Кликните на графике, чтобы поставить горизонтальную линию',
@@ -294,7 +288,7 @@ async function boot(): Promise<void> {
       lgChg.classList.remove('up', 'down');
       return;
     }
-    lgT.textContent = fmtClock(bar.time * 1000);
+    lgT.textContent = formatClock(bar.time * 1000);
     lgO.textContent = formatPrice(bar.open);
     lgH.textContent = formatPrice(bar.high);
     lgL.textContent = formatPrice(bar.low);
@@ -312,7 +306,7 @@ async function boot(): Promise<void> {
     stTps.textContent = String(s.tps);
     stTicks.textContent = nfInt.format(s.tickCount);
     stCandles.textContent = nfInt.format(s.baseCount);
-    stClock.textContent = fmtClock(s.t);
+    stClock.textContent = formatClock(s.t);
     const manual = s.mode === 'manual';
     manualControls.hidden = !manual;
     selSpeed.disabled = !manual;

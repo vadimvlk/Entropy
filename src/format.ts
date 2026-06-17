@@ -43,3 +43,12 @@ export function roundStep(qty: number, step = 0.1): number {
 export function formatQty(qty: number): string {
   return (Math.round(qty * 100) / 100).toFixed(1);
 }
+
+/** Wall-clock HH:MM:SS in UTC. The chart's time axis (lightweight-charts)
+ * renders in UTC, so the status clock and OHLC legend must match — local
+ * getters here would offset them by the viewer's timezone. */
+export function formatClock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
