@@ -388,12 +388,12 @@ async function boot(): Promise<void> {
     });
   }
 
-  /** Ensure a token is present; if not, open the prompt. Returns true if ready. */
+  /** Ensure a control token is present. Returns true if one already exists, so
+   * the caller proceeds inline. If absent, opens the prompt and runs `cb` only
+   * after a successful unlock — it must NOT run `cb` when a token is already
+   * present (that would re-invoke the caller and recurse). */
   function ensureToken(cb?: () => void): boolean {
-    if (client.hasToken()) {
-      cb?.();
-      return true;
-    }
+    if (client.hasToken()) return true;
     promptToken(cb);
     return false;
   }
