@@ -768,11 +768,14 @@ export class ChartController {
       this.drag = { kind: 'move', grab: hit, lastPrice: p };
       this.beginDrag(e);
     } else if (this.tool === 'fib' && !this.fib) {
+      // The press point anchors the 100% level; the cursor drives the 0% level
+      // (grab 'a'). That makes the 200% extension grow opposite to the drag:
+      // dragging down extends the fib up, dragging up extends it down.
       this.fibTime = this.timeFromX(x);
       this.fibPrices = [p, p];
       this.fib = new FibTool(p, p, this.fibTime, this.colors.fib);
       this.series.attachPrimitive(this.fib);
-      this.drag = { kind: 'create', grab: 'b', lastPrice: p };
+      this.drag = { kind: 'create', grab: 'a', lastPrice: p };
       this.beginDrag(e);
     }
     // Otherwise let the chart handle the event (pan / crosshair).
