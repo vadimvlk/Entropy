@@ -1,12 +1,17 @@
-// Entry point: wires the simulation engine, the chart controller, the trading
-// account and the UI.
+// Entry point: wires the market client (server stream), the chart controller,
+// the local paper-trading account and the UI. The simulation itself runs on the
+// server; this is a thin client — it fetches a timeframe's history over HTTP,
+// streams the live bar + header status over SSE, and issues token-gated control
+// commands (reset / nudge / mode / pause).
 
 import './style.css';
-import { Engine, SPEED_NAMES, VOL_NAMES, type Candle, type TfSeconds, type RegimeMode } from './engine';
 import { ChartController, type ChartType, type Tool, type Theme } from './chart';
 import { Account } from './trading';
 import { loadPrefs, savePrefs } from './storage';
 import { formatPrice, formatMoney, formatSignedMoney, formatPct, roundStep, formatQty } from './format';
+import { MarketClient, type StreamStatus, type TickPayload } from './marketClient';
+import { TF_LABEL, SECOND_TFS, type Candle, type TfSeconds } from '../shared/candles';
+import { SPEED_NAMES, VOL_NAMES } from '../shared/regimes';
 
 // ---- DOM helpers ----
 const $ = <T extends HTMLElement = HTMLElement>(sel: string): T => {
@@ -25,7 +30,6 @@ function fmtClock(ms: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-const TF_LABEL: Record<number, string> = { 1: '1s', 5: '5s', 15: '15s', 60: '1m', 300: '5m' };
 const TOOL_HINTS: Partial<Record<Tool, string>> = {
   hline: '◇ Кликните на графике, чтобы поставить горизонтальную линию',
   vline: '◇ Кликните на графике, чтобы поставить вертикальную линию',
@@ -39,7 +43,7 @@ const VOL_LABELS: Record<string, string> = {
   quiet: 'Тихо', normal: 'Норма', active: 'Активно', wild: 'Дико',
 };
 
-function boot(): void {
+async function boot(): Promise<void> {
   const prefs = loadPrefs();
   const theme: Theme = prefs?.theme === 'light' ? 'light' : 'dark';
   document.documentElement.dataset.theme = theme;
@@ -52,6 +56,7 @@ function boot(): void {
   const playBtn = $('#btn-playpause');
   const themeBtn = $('#btn-theme');
   const volBtn = $('#btn-vol');
+  const lockBtn = $('#btn-lock');
 
   const stRegime = $('#st-regime');
   const stTps = $('#st-tps');
@@ -60,7 +65,6 @@ function boot(): void {
   const stTf = $('#st-tf');
   const stDraw = $('#st-draw');
   const stClock = $('#st-clock');
-  const stSave = $('#st-save');
 
   const lgT = $('#lg-t');
   const lgO = $('#lg-o');
@@ -73,6 +77,8 @@ function boot(): void {
   const manualControls = $('#manual-controls');
   const selSpeed = $<HTMLSelectElement>('#sel-speed');
   const selVol = $<HTMLSelectElement>('#sel-vol');
+  const selSecTf = $<HTMLSelectElement>('#sel-sectf');
+  const tfSecLabel = $('#tf-sec');
 
   const chartWrap = $('.chart-wrap');
   const hintEl = $('#chart-hint');
@@ -107,7 +113,7 @@ function boot(): void {
   const mmNetEl = $('#mm-net');
   const mmBuy = $('#mm-buy');
   const mmSell = $('#mm-sell');
-  let mmNet = 0; // net impact: Σ(up) − Σ(down), in $
+  let mmNet = 0; // net impact: Σ(up) − Σ(down), in $ (local tally for this browser)
 
   selSpeed.innerHTML = SPEED_NAMES.map((n) => `<option value="${n}">${SPEED_LABELS[n] ?? n}</option>`).join('');
   selVol.innerHTML = VOL_NAMES.map((n) => `<option value="${n}">${VOL_LABELS[n] ?? n}</option>`).join('');
@@ -127,80 +133,123 @@ function boot(): void {
   const account = new Account();
   account.init();
 
+  const client = new MarketClient();
+
+  // Live state mirrored from the server stream.
+  let activeTf: TfSeconds = (prefs?.tf as TfSeconds) ?? 1;
+  let latestPrice = NaN;
+  let startPrice = NaN;
   let prevPrice = NaN;
-  const engine = new Engine({
-    onTick: (price) => {
-      chart.updateLive(engine.base);
-      if (account.liquidateIfNeeded(price)) {
-        refreshPositionLines();
-        toast('⚠ ЛИКВИДАЦИЯ ПОЗИЦИИ', 'warn');
-      }
-      updateHeader(price);
-      updateStatus();
-      updateTrading(price);
-    },
-    onSave: () => {
-      stSave.classList.add('flash');
-      setTimeout(() => stSave.classList.remove('flash'), 400);
-    },
-  });
+  let simTimeMs = 0;
+  let running = true;
+  let switching = false;
 
-  const restored = engine.init();
-  chart.setBase(engine.base, true);
-  prevPrice = engine.price;
-
-  // ---- Restore view + behaviour ----
-  if (prefs) {
-    if (prefs.type && prefs.type !== 'candles') {
-      chart.setType(prefs.type as ChartType);
-      setActive('#type-group .seg-btn', (b) => b.dataset.type === prefs.type);
-    }
-    if (prefs.tf && prefs.tf !== 1) {
-      const tf = prefs.tf as TfSeconds;
-      chart.setTimeframe(tf);
-      setActive('#tf-group .seg-btn', (b) => Number(b.dataset.tf) === tf);
-      stTf.textContent = TF_LABEL[tf];
-    }
+  // ---- Restore view (client-local prefs) ----
+  if (prefs?.type && prefs.type !== 'candles') {
+    chart.setType(prefs.type as ChartType);
+    setActive('#type-group .seg-btn', (b) => b.dataset.type === prefs.type);
   }
-  if (prefs?.speed && SPEED_NAMES.includes(prefs.speed)) selSpeed.value = prefs.speed;
-  if (prefs?.vol && VOL_NAMES.includes(prefs.vol)) selVol.value = prefs.vol;
-  applyMode((prefs?.mode as RegimeMode) === 'manual' ? 'manual' : 'auto', false);
   if (prefs?.showVolume === false) {
     chart.setVolumeVisible(false);
     volBtn.classList.remove('is-active');
   }
-  if (prefs?.mm) {
+  setLocked(!client.hasToken());
+
+  chart.setTimeframe(activeTf);
+  setTfActive(activeTf);
+  stTf.textContent = TF_LABEL[activeTf];
+
+  const ok = await loadActive(true);
+  if (!ok) toast('Сервер недоступен — пробуем переподключиться…', 'warn');
+
+  client.connect(activeTf, {
+    onTick,
+    onReset,
+    onRunning: (r) => {
+      running = r;
+      setLiveState(r);
+    },
+    onReconnect: () => void loadActive(false),
+  });
+
+  if (prefs?.mm && client.hasToken()) {
     orderpanel.classList.add('no-anim');
     setMM(true);
     requestAnimationFrame(() => orderpanel.classList.remove('no-anim'));
   }
 
   refreshPositionLines();
-  updateHeader(engine.price);
-  updateStatus();
-  updateLegend(latestCandle());
-  updateTrading(engine.price);
+
+  // ---- Data flow ----
+  function onTick(p: TickPayload): void {
+    latestPrice = p.price;
+    startPrice = p.startPrice;
+    simTimeMs = p.t;
+    running = p.running;
+    if (!switching) chart.updateLiveBar(p.bar);
+    if (account.liquidateIfNeeded(latestPrice)) {
+      refreshPositionLines();
+      toast('⚠ ЛИКВИДАЦИЯ ПОЗИЦИИ', 'warn');
+    }
+    updateHeader(latestPrice);
+    updateStatus(p);
+    updateTrading(latestPrice);
+    setLiveState(p.running);
+  }
+
+  async function onReset(): Promise<void> {
+    account.reset();
+    mmNet = 0;
+    renderMmNet();
+    chart.clearDrawings();
+    chart.clearMarkers();
+    chart.setPosition(null, null, 'flat');
+    prevPrice = NaN;
+    await loadActive(true);
+    toast('График сброшен — новая последовательность', 'info');
+  }
+
+  /** Fetch + paint the active timeframe's history. Returns false if offline. */
+  async function loadActive(resetView: boolean): Promise<boolean> {
+    try {
+      const snap = await client.fetchSeries(activeTf);
+      startPrice = snap.startPrice;
+      latestPrice = snap.price;
+      simTimeMs = snap.t;
+      running = snap.running;
+      if (Number.isNaN(prevPrice)) prevPrice = snap.price;
+      chart.setSeries(snap.bars, resetView);
+      updateHeader(latestPrice);
+      updateStatus(snap);
+      updateTrading(latestPrice);
+      setLiveState(snap.running);
+      refreshPositionLines();
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   // ---- Helpers ----
   function setActive(sel: string, pred: (b: HTMLElement) => boolean): void {
     $all(sel).forEach((b) => b.classList.toggle('is-active', pred(b)));
   }
 
+  function setTfActive(tf: TfSeconds): void {
+    setActive('#tf-group .seg-btn', (b) => Number(b.dataset.tf) === tf);
+    const isSec = (SECOND_TFS as readonly number[]).includes(tf);
+    tfSecLabel.classList.toggle('is-active', isSec);
+    if (isSec) selSecTf.value = String(tf);
+  }
+
   function persistPrefs(): void {
     savePrefs({
-      tf: chart.getTimeframe(),
+      tf: activeTf,
       type: chart.getType(),
       theme: chart.getTheme(),
-      mode: engine.getMode(),
-      speed: selSpeed.value,
-      vol: selVol.value,
       showVolume: chart.isVolumeVisible(),
       mm: orderpanel.classList.contains('is-mm'),
     });
-  }
-
-  function latestCandle(): Candle | null {
-    return engine.base.length ? engine.base[engine.base.length - 1] : null;
   }
 
   function toast(msg: string, kind: 'buy' | 'sell' | 'warn' | 'info' = 'info'): void {
@@ -216,13 +265,14 @@ function boot(): void {
   }
 
   function updateHeader(price: number): void {
+    if (Number.isNaN(price)) return;
     priceEl.textContent = formatPrice(price);
-    const up = price >= engine.startPrice;
+    const up = price >= startPrice;
     priceEl.classList.toggle('up', up);
     priceEl.classList.toggle('down', !up);
 
-    const chg = price - engine.startPrice;
-    const pct = engine.startPrice !== 0 ? (chg / Math.abs(engine.startPrice)) * 100 : 0;
+    const chg = price - startPrice;
+    const pct = startPrice !== 0 ? (chg / Math.abs(startPrice)) * 100 : 0;
     changeEl.textContent = `${formatSignedMoney(chg)}  ${formatPct(pct)}`;
     changeEl.classList.toggle('up', chg >= 0);
     changeEl.classList.toggle('down', chg < 0);
@@ -257,20 +307,26 @@ function boot(): void {
     lgChg.classList.toggle('down', d < 0);
   }
 
-  function updateStatus(): void {
-    stRegime.textContent = `${engine.regimeName().toUpperCase()}·${engine.volName().toUpperCase()}`;
-    stTps.textContent = String(engine.ticksPerSecond());
-    stTicks.textContent = nfInt.format(engine.tickCount);
-    stCandles.textContent = nfInt.format(engine.base.length);
-    stClock.textContent = fmtClock(engine.simTimeMs);
-    if (engine.getMode() === 'auto') {
-      selSpeed.value = engine.regimeName();
-      selVol.value = engine.volName();
+  function updateStatus(s: StreamStatus): void {
+    stRegime.textContent = `${s.regime.toUpperCase()}·${s.vol.toUpperCase()}`;
+    stTps.textContent = String(s.tps);
+    stTicks.textContent = nfInt.format(s.tickCount);
+    stCandles.textContent = nfInt.format(s.baseCount);
+    stClock.textContent = fmtClock(s.t);
+    const manual = s.mode === 'manual';
+    manualControls.hidden = !manual;
+    selSpeed.disabled = !manual;
+    selVol.disabled = !manual;
+    setActive('#mode-group .seg-btn', (b) => b.dataset.mode === s.mode);
+    if (!manual) {
+      selSpeed.value = s.regime;
+      selVol.value = s.vol;
     }
   }
 
   // ---- Trading UI ----
   function updateTrading(price: number): void {
+    if (Number.isNaN(price)) return;
     const v = account.view(price);
     acBalance.textContent = '$' + formatMoney(v.balance);
     acEquity.textContent = '$' + formatMoney(v.equity);
@@ -278,7 +334,6 @@ function boot(): void {
     acRealized.textContent = formatSignedMoney(v.realized);
     signClass(acRealized, v.realized);
 
-    // Position card
     posSideEl.textContent = v.side === 'long' ? 'LONG' : v.side === 'short' ? 'SHORT' : 'НЕТ';
     posSideEl.className = 'pos-badge ' + v.side;
     posPnl.textContent = (v.unrealized >= 0 ? '+$' : '−$') + formatMoney(Math.abs(v.unrealized));
@@ -294,23 +349,79 @@ function boot(): void {
     posLiq.classList.toggle('active', v.liqPrice !== null);
     btnClose.disabled = v.side === 'flat';
 
-    // Order meta for the currently entered quantity
     const qty = currentQty();
     ordNotional.textContent = '$' + formatMoney(qty * price);
     ordMargin.textContent = '$' + formatMoney((qty * price) / account.leverage);
     ordMax.textContent = formatQty(v.maxQty) + ' конт.';
 
-    // Market-Maker face — updated every tick so the back stays live while hidden.
     mmMark.textContent = formatPrice(price);
     mmDelta.textContent = '±$' + mmImpact().toFixed(1);
   }
 
   function refreshPositionLines(): void {
-    const v = account.view(engine.price);
+    if (Number.isNaN(latestPrice)) {
+      chart.setPosition(null, null, 'flat');
+      return;
+    }
+    const v = account.view(latestPrice);
     chart.setPosition(v.side === 'flat' ? null : v.avgEntry, v.liqPrice, v.side);
   }
 
-  // ---- Quantity controls ----
+  // ---- Token / lock ----
+  function setLocked(locked: boolean): void {
+    lockBtn.classList.toggle('is-active', !locked);
+    lockBtn.setAttribute('data-tip', locked ? 'Разблокировать управление (токен)' : 'Управление разблокировано — нажмите, чтобы заблокировать');
+  }
+
+  function promptToken(cb?: () => void): void {
+    const t = window.prompt('Контрольный токен (показан в консоли сервера при запуске):', '');
+    if (!t) return;
+    client.verify(t).then((r) => {
+      if (r.ok) {
+        client.setToken(t);
+        setLocked(false);
+        toast('Управление разблокировано', 'info');
+        cb?.();
+      } else {
+        toast('Неверный токен', 'warn');
+      }
+    });
+  }
+
+  /** Ensure a token is present; if not, open the prompt. Returns true if ready. */
+  function ensureToken(cb?: () => void): boolean {
+    if (client.hasToken()) {
+      cb?.();
+      return true;
+    }
+    promptToken(cb);
+    return false;
+  }
+
+  function handleControlError(r: { ok: boolean; status: number; data: Record<string, unknown> }): void {
+    if (r.status === 401) {
+      client.clearToken();
+      setLocked(true);
+      toast('Требуется действительный токен', 'warn');
+      promptToken();
+    } else if (r.status === 0) {
+      toast('Сервер недоступен', 'warn');
+    } else {
+      toast('✕ ' + (typeof r.data.error === 'string' ? r.data.error : 'ошибка'), 'warn');
+    }
+  }
+
+  lockBtn.addEventListener('click', () => {
+    if (client.hasToken()) {
+      client.clearToken();
+      setLocked(true);
+      toast('Управление заблокировано', 'info');
+    } else {
+      promptToken();
+    }
+  });
+
+  // ---- Quantity controls (local paper account — no token needed) ----
   function currentQty(): number {
     const raw = parseFloat(qtyInput.value.replace(',', '.'));
     if (!Number.isFinite(raw)) return account.minQty;
@@ -318,7 +429,7 @@ function boot(): void {
   }
   function setQty(q: number): void {
     qtyInput.value = formatQty(Math.max(account.minQty, roundStep(q, account.step)));
-    updateTrading(engine.price);
+    updateTrading(latestPrice);
   }
   $('#qty-minus').addEventListener('click', () => setQty(currentQty() - account.step));
   $('#qty-plus').addEventListener('click', () => setQty(currentQty() + account.step));
@@ -326,35 +437,36 @@ function boot(): void {
   $all('.qty-presets button').forEach((b) => {
     b.addEventListener('click', () => {
       const mul = parseFloat(b.dataset.qmul || '1');
-      const max = account.view(engine.price).maxQty;
+      const max = account.view(latestPrice).maxQty;
       setQty(Math.max(account.minQty, max * mul));
     });
   });
 
-  // ---- Orders ----
+  // ---- Orders (local) ----
   function order(side: 'buy' | 'sell'): void {
+    if (Number.isNaN(latestPrice)) return;
     const qty = currentQty();
-    const res = account.market(side, qty, engine.price);
+    const res = account.market(side, qty, latestPrice);
     if (!res.ok) {
       toast('✕ ' + (res.reason ?? 'ошибка'), 'warn');
       return;
     }
-    chart.addMarker(Math.floor(engine.simTimeMs / 1000), side);
+    chart.addMarker(Math.floor(simTimeMs / 1000), side);
     refreshPositionLines();
-    updateTrading(engine.price);
-    toast(`${side === 'buy' ? '▲ Куплено' : '▼ Продано'} ${formatQty(qty)} @ ${formatPrice(engine.price)}`, side);
+    updateTrading(latestPrice);
+    toast(`${side === 'buy' ? '▲ Куплено' : '▼ Продано'} ${formatQty(qty)} @ ${formatPrice(latestPrice)}`, side);
   }
   btnBuy.addEventListener('click', () => order('buy'));
   btnSell.addEventListener('click', () => order('sell'));
   btnClose.addEventListener('click', () => {
-    const res = account.close(engine.price);
+    const res = account.close(latestPrice);
     if (!res.ok) return;
     refreshPositionLines();
-    updateTrading(engine.price);
+    updateTrading(latestPrice);
     toast(`Позиция закрыта · ${formatSignedMoney(res.realized ?? 0)}`, (res.realized ?? 0) >= 0 ? 'buy' : 'sell');
   });
 
-  // ---- Market-Maker mode ----
+  // ---- Market-Maker mode (token-gated — affects the global stream) ----
   function mmImpact(): number {
     const raw = parseFloat(mmImpactInput.value.replace(',', '.'));
     if (!Number.isFinite(raw)) return 0.1;
@@ -362,29 +474,34 @@ function boot(): void {
   }
   function setImpact(v: number): void {
     mmImpactInput.value = Math.max(0.1, roundStep(v, 0.1)).toFixed(1);
-    updateTrading(engine.price);
+    updateTrading(latestPrice);
   }
   function renderMmNet(): void {
     mmNetEl.textContent = (mmNet >= 0 ? '+$' : '−$') + formatMoney(Math.abs(mmNet));
     mmNetEl.classList.toggle('up', mmNet > 0.0049);
     mmNetEl.classList.toggle('down', mmNet < -0.0049);
   }
-  function injectMM(dir: 'up' | 'down'): void {
+  async function injectMM(dir: 'up' | 'down'): Promise<void> {
+    if (!ensureToken(() => void injectMM(dir))) return;
     const amt = mmImpact();
-    engine.nudge(dir === 'up' ? amt : -amt);
-    mmNet += dir === 'up' ? amt : -amt;
+    const delta = dir === 'up' ? amt : -amt;
+    const r = await client.nudge(delta);
+    if (!r.ok) return handleControlError(r);
+    mmNet += delta;
     renderMmNet();
+    const px = typeof r.data.price === 'number' ? r.data.price : latestPrice;
     toast(
-      `${dir === 'up' ? '▲ ВВЕРХ' : '▼ ВНИЗ'} ${dir === 'up' ? '+' : '−'}$${amt.toFixed(1)} @ ${formatPrice(engine.price)}`,
+      `${dir === 'up' ? '▲ ВВЕРХ' : '▼ ВНИЗ'} ${dir === 'up' ? '+' : '−'}$${amt.toFixed(1)} @ ${formatPrice(px)}`,
       dir === 'up' ? 'buy' : 'sell',
     );
   }
   function setMM(on: boolean): void {
+    if (on && !ensureToken(() => setMM(true))) return;
     orderpanel.classList.toggle('is-mm', on);
     mmToggle.setAttribute('aria-checked', String(on));
     document.querySelector('.mm-front')?.setAttribute('aria-hidden', on ? 'true' : 'false');
     document.querySelector('.mm-back')?.setAttribute('aria-hidden', on ? 'false' : 'true');
-    updateTrading(engine.price);
+    updateTrading(latestPrice);
     persistPrefs();
   }
 
@@ -394,41 +511,41 @@ function boot(): void {
   $all('.mm-back .qty-presets button').forEach((b) =>
     b.addEventListener('click', () => setImpact(parseFloat(b.dataset.impact || '1'))),
   );
-  mmBuy.addEventListener('click', () => injectMM('up'));
-  mmSell.addEventListener('click', () => injectMM('down'));
+  mmBuy.addEventListener('click', () => void injectMM('up'));
+  mmSell.addEventListener('click', () => void injectMM('down'));
   mmToggle.addEventListener('click', () => setMM(!orderpanel.classList.contains('is-mm')));
 
-  function setLiveState(running: boolean): void {
-    liveLabel.textContent = running ? 'LIVE' : 'PAUSE';
-    liveEl.classList.toggle('paused', !running);
-    playBtn.classList.toggle('paused', !running);
-    playBtn.setAttribute('data-tip', running ? 'Пауза' : 'Старт');
+  function setLiveState(isRunning: boolean): void {
+    liveLabel.textContent = isRunning ? 'LIVE' : 'PAUSE';
+    liveEl.classList.toggle('paused', !isRunning);
+    playBtn.classList.toggle('paused', !isRunning);
+    playBtn.setAttribute('data-tip', isRunning ? 'Пауза' : 'Старт');
   }
 
-  function applyMode(mode: RegimeMode, persist = true): void {
-    engine.setMode(mode);
-    manualControls.hidden = mode !== 'manual';
-    setActive('#mode-group .seg-btn', (b) => b.dataset.mode === mode);
-    selSpeed.disabled = mode !== 'manual';
-    selVol.disabled = mode !== 'manual';
-    if (mode === 'manual') {
-      engine.setManualSpeed(selSpeed.value);
-      engine.setManualVol(selVol.value);
+  // ---- Timeframe switching (viewing — no token) ----
+  async function applyTimeframe(tf: TfSeconds): Promise<void> {
+    if (tf === activeTf) return;
+    activeTf = tf;
+    switching = true;
+    setTfActive(tf);
+    stTf.textContent = TF_LABEL[tf];
+    chart.setTimeframe(tf);
+    client.switchTimeframe(tf);
+    persistPrefs();
+    try {
+      const okSwitch = await loadActive(true);
+      if (!okSwitch) toast('Не удалось загрузить таймфрейм', 'warn');
+    } finally {
+      if (activeTf === tf) switching = false;
     }
-    if (persist) persistPrefs();
-    updateStatus();
   }
 
-  // ---- Timeframe / type / mode / theme ----
   $all('#tf-group .seg-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const tf = Number(btn.dataset.tf) as TfSeconds;
-      setActive('#tf-group .seg-btn', (b) => b === btn);
-      chart.setTimeframe(tf);
-      stTf.textContent = TF_LABEL[tf];
-      persistPrefs();
-    });
+    btn.addEventListener('click', () => void applyTimeframe(Number(btn.dataset.tf) as TfSeconds));
   });
+  selSecTf.addEventListener('change', () => void applyTimeframe(Number(selSecTf.value) as TfSeconds));
+
+  // ---- Chart type / theme / volume (local) ----
   $all('#type-group .seg-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const type = btn.dataset.type as ChartType;
@@ -437,33 +554,42 @@ function boot(): void {
       persistPrefs();
     });
   });
-  $all('#mode-group .seg-btn').forEach((btn) => {
-    btn.addEventListener('click', () => applyMode(btn.dataset.mode as RegimeMode));
-  });
-  selSpeed.addEventListener('change', () => {
-    engine.setManualSpeed(selSpeed.value);
-    persistPrefs();
-    updateStatus();
-  });
-  selVol.addEventListener('change', () => {
-    engine.setManualVol(selVol.value);
-    persistPrefs();
-    updateStatus();
-  });
   themeBtn.addEventListener('click', () => {
     const next: Theme = chart.getTheme() === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
     chart.setTheme(next);
     persistPrefs();
   });
-
   volBtn.addEventListener('click', () => {
     const visible = chart.toggleVolume();
     volBtn.classList.toggle('is-active', visible);
     persistPrefs();
   });
 
-  // ---- Tools ----
+  // ---- Generator mode / regime (token-gated — global) ----
+  $all('#mode-group .seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode === 'manual' ? 'manual' : 'auto';
+      if (!ensureToken(() => btn.click())) return;
+      client.setMode(mode, selSpeed.value, selVol.value).then((r) => {
+        if (!r.ok) handleControlError(r);
+      });
+    });
+  });
+  selSpeed.addEventListener('change', () => {
+    if (!ensureToken()) return;
+    client.setRegime(selSpeed.value, selVol.value).then((r) => {
+      if (!r.ok) handleControlError(r);
+    });
+  });
+  selVol.addEventListener('change', () => {
+    if (!ensureToken()) return;
+    client.setRegime(selSpeed.value, selVol.value).then((r) => {
+      if (!r.ok) handleControlError(r);
+    });
+  });
+
+  // ---- Tools (local) ----
   function selectTool(tool: Tool, btn: HTMLElement): void {
     setActive('.toolrail .tool', (b) => b === btn);
     chart.setTool(tool);
@@ -484,7 +610,7 @@ function boot(): void {
   });
   $('#btn-clear').addEventListener('click', () => chart.clearDrawings());
 
-  // ---- Zoom ----
+  // ---- Zoom (local) ----
   $('#zoom-in').addEventListener('click', () => chart.zoomIn());
   $('#zoom-out').addEventListener('click', () => chart.zoomOut());
   $('#zoom-fit').addEventListener('click', () => chart.fit());
@@ -493,59 +619,40 @@ function boot(): void {
     chart.scrollToRealtime();
   });
 
-  // ---- Play / pause ----
+  // ---- Play / pause (token-gated — global) ----
   playBtn.addEventListener('click', () => {
-    if (engine.isRunning()) {
-      engine.pause();
-      setLiveState(false);
-    } else {
-      engine.start();
-      setLiveState(true);
-    }
+    if (!ensureToken()) return;
+    const call = running ? client.pause() : client.resume();
+    call.then((r) => {
+      if (!r.ok) handleControlError(r);
+    });
   });
 
-  // ---- Reset (new chart + fresh account) ----
+  // ---- Reset (token-gated — global; SSE 'reset' refreshes every viewer) ----
   $('#btn-reset').addEventListener('click', () => {
-    if (!window.confirm('Сбросить график и счёт? Начнётся новая случайная последовательность, депозит вернётся к $1000.')) return;
-    engine.reset();
-    account.reset();
-    mmNet = 0;
-    renderMmNet();
-    chart.clearDrawings();
-    chart.clearMarkers();
-    chart.setPosition(null, null, 'flat');
-    chart.setBase(engine.base, true);
-    prevPrice = engine.price;
-    updateHeader(engine.price);
-    updateStatus();
-    updateLegend(latestCandle());
-    updateTrading(engine.price);
-    engine.start();
-    setLiveState(true);
+    if (!window.confirm('Сбросить график для всех? Начнётся новая случайная последовательность, ваш депозит вернётся к $1000.')) return;
+    if (!ensureToken()) return;
+    client.reset().then((r) => {
+      if (!r.ok) handleControlError(r);
+    });
   });
 
-  // ---- Persist on exit / tab hide ----
-  const persistAll = () => {
-    engine.saveNow();
-    account.save();
-  };
+  // ---- Persist account on exit / tab hide (local) ----
+  const persistAll = () => account.save();
   window.addEventListener('beforeunload', persistAll);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') persistAll();
   });
 
   // ---- Go ----
-  stTf.textContent = TF_LABEL[chart.getTimeframe()];
   const dc = chart.drawingCounts();
   stDraw.textContent = String(dc.h + dc.v + dc.fib);
-  engine.start();
-  setLiveState(true);
-
-  void restored;
+  updateLegend(null);
+  renderMmNet();
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', () => void boot());
 } else {
-  boot();
+  void boot();
 }

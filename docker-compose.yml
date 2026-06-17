@@ -1,0 +1,26 @@
+# ENTROPY — always-on random-walk stream.
+#
+#   CONTROL_TOKEN="$(openssl rand -base64 24)" docker compose up -d --build
+#
+# Leave CONTROL_TOKEN unset to have the server auto-generate one (printed in the
+# logs: `docker compose logs entropy`). The SQLite database lives on a named
+# volume, so the stream continues seamlessly across restarts / re-creations.
+
+services:
+  entropy:
+    build: .
+    image: entropy
+    container_name: entropy
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      DB_PATH: /data/market.db
+      # Pin a token here (or via the host env) for stable control access.
+      CONTROL_TOKEN: ${CONTROL_TOKEN:-}
+    volumes:
+      - entropy-data:/data
+    restart: unless-stopped
+
+volumes:
+  entropy-data:

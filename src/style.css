@@ -171,6 +171,10 @@ body::after {
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
   border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 10px 30px -20px #000;
+  /* Own stacking context above the workspace so drop-below tooltips paint over
+     the chart instead of being covered by it. */
+  position: relative;
+  z-index: 60;
 }
 
 .brand {
@@ -441,6 +445,14 @@ body::after {
 .msel select:focus {
   outline: 1px solid var(--accent);
 }
+/* The seconds-timeframe dropdown lights up when one of its TFs is active. */
+.tf-sec.is-active {
+  border-color: var(--accent);
+  box-shadow: inset 0 1px 4px var(--inset), 0 0 0 1px var(--accent);
+}
+.tf-sec.is-active > span {
+  color: var(--accent);
+}
 
 /* ============================ WORKSPACE ============================ */
 .workspace {
@@ -528,19 +540,21 @@ body::after {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.16s ease, transform 0.16s ease;
-  z-index: 50;
+  z-index: 200;
 }
 [data-tip]:hover::after {
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }
-/* segmented (top bar) tooltips drop below */
-.seg [data-tip]::after {
+/* segmented (top bar) tooltips, and the standalone seconds-TF dropdown, drop below */
+.seg [data-tip]::after,
+.topbar-controls > [data-tip]::after {
   left: 50%;
   top: calc(100% + 10px);
   transform: translateX(-50%) translateY(-6px);
 }
-.seg [data-tip]:hover::after {
+.seg [data-tip]:hover::after,
+.topbar-controls > [data-tip]:hover::after {
   transform: translateX(-50%) translateY(0);
 }
 

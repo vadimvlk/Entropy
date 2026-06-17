@@ -1,19 +1,26 @@
 {
   "name": "random-walk-terminal",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 5173 --strictPort",
-    "build": "tsc && vite build",
+    "dev": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.json && vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist-server/index.mjs",
+    "start": "tsx server/index.ts",
+    "start:prod": "node dist-server/index.mjs",
     "preview": "vite preview --port 4173 --strictPort",
     "test:unit": "esbuild test/verify.ts --bundle --platform=node --format=esm --outfile=test/verify.mjs && node test/verify.mjs",
     "test:e2e": "node test/e2e.mjs"
   },
   "dependencies": {
-    "lightweight-charts": "^5.0.8"
+    "lightweight-charts": "^5.0.8",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
+    "esbuild": "^0.25.10",
     "playwright": "^1.61.0",
     "typescript": "^5.7.2",
     "vite": "^6.3.5"

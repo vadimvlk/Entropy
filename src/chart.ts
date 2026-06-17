@@ -2,6 +2,10 @@
 // series, a volume pane, timeframe + chart-type switching, light/dark theming,
 // the live tick update path, drawing tools (horizontal/vertical lines, a
 // draggable Fibonacci tool), crosshair/legend wiring and zoom.
+//
+// Data model: the server is authoritative per timeframe. The controller holds
+// the bars of the *currently selected* timeframe (`this.bars`) exactly as the
+// server delivers them — it no longer aggregates a 1-second base locally.
 
 import {
   createChart,
@@ -27,7 +31,7 @@ import {
   type PriceFormat,
   type Coordinate,
 } from 'lightweight-charts';
-import { aggregate, lastGroup, type Candle, type TfSeconds } from './engine';
+import { bucketOf, type Candle, type TfSeconds } from '../shared/candles';
 import { VerticalLine } from './verticalLine';
 import { FibTool, type FibColors } from './fib';
 import { HiLoLabels, type HiLoColors } from './hilo';
@@ -125,7 +129,8 @@ export class ChartController {
   private volumeVisible = true;
   private type: ChartType = 'candles';
   private tf: TfSeconds = 1;
-  private base: Candle[] = [];
+  // Bars of the currently selected timeframe, exactly as served.
+  private bars: Candle[] = [];
   private tool: Tool = 'cursor';
   private magnet = false;
   private theme: Theme = 'dark';
@@ -149,9 +154,8 @@ export class ChartController {
   private markersPlugin: ISeriesMarkersPluginApi<Time> | null = null;
   private markersData: { time: number; side: 'buy' | 'sell' }[] = [];
 
-  // Visible-range high/low axis labels + cached aggregated series.
+  // Visible-range high/low axis labels.
   private hilo: HiLoLabels | null = null;
-  private agg: Candle[] = [];
 
   // Fib drag state.
   private drag: { kind: 'create' | 'move'; grab: 'a' | 'b' | 'body'; lastPrice: number } | null = null;
@@ -283,7 +287,7 @@ export class ChartController {
       1, // separate pane below the price pane
     );
     this.volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0 } });
-    this.volumeSeries.setData(this.toVolumeData(this.agg));
+    this.volumeSeries.setData(this.toVolumeData(this.bars));
     this.applyVolumeStretch();
   }
 
@@ -362,18 +366,16 @@ export class ChartController {
   }
 
   /** Full rebuild of the visible series (after init / timeframe / type change). */
-  setBase(base: Candle[], resetView = true): void {
-    this.base = base;
-    const agg = aggregate(base, this.tf);
-    this.agg = agg;
-    this.series.setData(this.toSeriesData(agg));
+  setSeries(bars: Candle[], resetView = true): void {
+    this.bars = bars;
+    this.series.setData(this.toSeriesData(bars));
     if (this.volumeSeries) {
-      this.volumeSeries.setData(this.toVolumeData(agg));
+      this.volumeSeries.setData(this.toVolumeData(bars));
       this.applyVolumeStretch();
     }
     this.renderDrawings();
     this.applyMarkers();
-    if (resetView) this.showRecent(agg.length);
+    if (resetView) this.showRecent(bars.length);
     this.emitLatest();
     this.updateHiLo();
   }
@@ -384,31 +386,29 @@ export class ChartController {
     this.chart.timeScale().setVisibleLogicalRange({ from: n - span, to: n + 6 });
   }
 
-  /** Live per-tick update of the latest aggregated bar. */
-  updateLive(base: Candle[]): void {
-    this.base = base;
-    const g = lastGroup(base, this.tf);
-    if (!g) return;
-    this.series.update(this.toSeriesPoint(g));
-    if (this.volumeSeries) this.volumeSeries.update(this.toVolumePoint(g));
-    // Keep the aggregated cache tail in sync (used for visible high/low).
-    const n = this.agg.length;
-    if (n && this.agg[n - 1].time === g.time) this.agg[n - 1] = g;
-    else this.agg.push(g);
-    if (!this.hovering) this.cb.onBar?.(g, true);
+  /** Live update of the latest bar (the server-computed live bar for this TF). */
+  updateLiveBar(bar: Candle | null): void {
+    if (!bar) return;
+    this.series.update(this.toSeriesPoint(bar));
+    if (this.volumeSeries) this.volumeSeries.update(this.toVolumePoint(bar));
+    // Keep the local bars tail in sync (used for visible high/low + tools).
+    const n = this.bars.length;
+    if (n && this.bars[n - 1].time === bar.time) this.bars[n - 1] = bar;
+    else this.bars.push(bar);
+    if (!this.hovering) this.cb.onBar?.(bar, true);
     for (const v of this.vlineObjs) v.updateAllViews();
     this.fib?.updateAllViews();
     this.updateHiLo();
   }
 
   private emitLatest(): void {
-    this.cb.onBar?.(lastGroup(this.base, this.tf), true);
+    this.cb.onBar?.(this.bars.length ? this.bars[this.bars.length - 1] : null, true);
   }
 
   /** Highest high / lowest low across the currently visible bars → axis labels. */
   private updateHiLo(): void {
     if (!this.hilo) return;
-    const n = this.agg.length;
+    const n = this.bars.length;
     if (n === 0) {
       this.hilo.set(null, null);
       return;
@@ -427,8 +427,8 @@ export class ChartController {
     let hi = -Infinity;
     let lo = Infinity;
     for (let i = from; i <= to; i++) {
-      if (this.agg[i].high > hi) hi = this.agg[i].high;
-      if (this.agg[i].low < lo) lo = this.agg[i].low;
+      if (this.bars[i].high > hi) hi = this.bars[i].high;
+      if (this.bars[i].low < lo) lo = this.bars[i].low;
     }
     this.hilo.set(hi, lo);
   }
@@ -447,7 +447,7 @@ export class ChartController {
       timeScale: { borderColor: this.colors.border },
     });
     this.applySeriesColors();
-    this.volumeSeries?.setData(this.toVolumeData(aggregate(this.base, this.tf)));
+    this.volumeSeries?.setData(this.toVolumeData(this.bars));
     this.renderDrawings();
     this.applyMarkers();
     this.hilo?.setColors(this.colors.hilo);
@@ -460,11 +460,12 @@ export class ChartController {
 
   // ---- Timeframe / type switching ----
 
+  /** Switch the active timeframe. The caller is responsible for fetching the
+   * new series and calling setSeries() afterwards. */
   setTimeframe(tf: TfSeconds): void {
     if (tf === this.tf) return;
     this.tf = tf;
     this.chart.timeScale().applyOptions({ secondsVisible: tf < 60 });
-    this.setBase(this.base, true);
   }
 
   getTimeframe(): TfSeconds {
@@ -486,7 +487,7 @@ export class ChartController {
     }
     this.chart.removeSeries(this.series);
     this.createSeries();
-    this.setBase(this.base, false);
+    this.setSeries(this.bars, false);
   }
 
   getType(): ChartType {
@@ -531,13 +532,10 @@ export class ChartController {
     if (!p.point) return null;
     const t = this.chart.timeScale().coordinateToTime(p.point.x);
     if (typeof t === 'number') return t as number;
-    if (p.logical !== undefined && this.base.length) {
-      const data = aggregate(this.base, this.tf);
-      if (data.length) {
-        const lastT = data[data.length - 1].time;
-        const steps = Math.round((p.logical as number) - (data.length - 1));
-        return lastT + steps * this.tf;
-      }
+    if (p.logical !== undefined && this.bars.length) {
+      const lastT = this.bars[this.bars.length - 1].time;
+      const steps = Math.round((p.logical as number) - (this.bars.length - 1));
+      return lastT + steps * this.tf;
     }
     return null;
   }
@@ -683,7 +681,7 @@ export class ChartController {
   private applyMarkers(): void {
     if (!this.markersPlugin) return;
     const markers: SeriesMarker<Time>[] = this.markersData.map((m) => {
-      const t = (this.tf === 1 ? m.time : Math.floor(m.time / this.tf) * this.tf) as UTCTimestamp as Time;
+      const t = bucketOf(m.time, this.tf) as UTCTimestamp as Time;
       return m.side === 'buy'
         ? { time: t, position: 'belowBar' as const, color: this.colors.up, shape: 'arrowUp' as const, text: 'B' }
         : { time: t, position: 'aboveBar' as const, color: this.colors.down, shape: 'arrowDown' as const, text: 'S' };
@@ -715,13 +713,12 @@ export class ChartController {
   private timeFromX(x: number): number {
     const t = this.chart.timeScale().coordinateToTime(x as Coordinate);
     if (typeof t === 'number') return t as number;
-    const data = aggregate(this.base, this.tf);
-    return data.length ? data[data.length - 1].time : 0;
+    return this.bars.length ? this.bars[this.bars.length - 1].time : 0;
   }
 
   private fibAnchorTime(): number {
     if (this.fibTime !== null) return this.fibTime;
-    return this.base.length ? this.base[this.base.length - 1].time : 0;
+    return this.bars.length ? this.bars[this.bars.length - 1].time : 0;
   }
 
   private fibTuple(): [number, number, number] | null {
@@ -866,7 +863,7 @@ export class ChartController {
   resetView(): void {
     this.barSpacing = DEFAULT_BAR_SPACING;
     this.chart.timeScale().applyOptions({ barSpacing: this.barSpacing });
-    this.showRecent(aggregate(this.base, this.tf).length);
+    this.showRecent(this.bars.length);
   }
 
   scrollToRealtime(): void {

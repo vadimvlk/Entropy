@@ -1,6 +1,6 @@
 // Random helpers for the tick generator.
 // Fully stochastic — no fixed seed. A standard-normal sampler drives the
-// random walk so the price can wander freely (including below zero).
+// random walk so the price can wander freely (multiplicative, stays positive).
 
 let spare: number | null = null;
 
