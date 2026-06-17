@@ -233,7 +233,14 @@ async function boot(): Promise<void> {
     setActive('#tf-group .seg-btn', (b) => Number(b.dataset.tf) === tf);
     const isSec = (SECOND_TFS as readonly number[]).includes(tf);
     tfSecLabel.classList.toggle('is-active', isSec);
+    // Reflect the active second-TF in the dropdown — or clear the selection when
+    // a minute+ TF is active. Clearing is essential: a native <select> fires
+    // `change` only when the value actually changes, so if the dropdown kept a
+    // stale second value (e.g. "1"), re-picking that same option would be
+    // silently ignored — making that timeframe unreachable until you first pick
+    // a different one.
     if (isSec) selSecTf.value = String(tf);
+    else selSecTf.selectedIndex = -1;
   }
 
   function persistPrefs(): void {

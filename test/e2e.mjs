@@ -126,6 +126,24 @@ await page.locator('#mm-toggle').click(); // flip back to trading
 await page.waitForTimeout(400);
 ok('MM: flips back to trading', !(await page.evaluate(() => document.querySelector('.orderpanel').classList.contains('is-mm'))));
 
+// --- Timeframe: the seconds dropdown must reach 1s from a minute TF ---
+// Regression — a native <select> fires `change` only when its value actually
+// changes. The dropdown used to keep a stale second value while a minute TF was
+// active, so re-picking that same option (notably "1s", the default) was
+// silently ignored: you had to bounce through 5s/15s first. After a minute TF
+// is active the dropdown must hold no second value, so every option re-fires.
+const secIdx = () => page.locator('#sel-sectf').evaluate((el) => el.selectedIndex);
+await page.locator('#sel-sectf').selectOption('15');
+await page.waitForTimeout(400);
+ok('sec dropdown → 15s applies', (await lsPrefs()).tf === 15);
+await page.locator('#tf-group .seg-btn[data-tf="60"]').click();
+await page.waitForTimeout(400);
+ok('minute TF (1m) applies', (await lsPrefs()).tf === 60);
+ok('sec dropdown cleared on minute TF (selectedIndex -1)', (await secIdx()) === -1);
+await page.locator('#sel-sectf').selectOption('1');
+await page.waitForTimeout(400);
+ok('1s reachable directly from a minute TF', (await lsPrefs()).tf === 1);
+
 await page.screenshot({ path: 'verify-11-final.png' });
 ok('no console errors (excluding favicon)', errors.filter((e) => !/favicon/.test(e)).length === 0);
 if (errors.length) console.log('  console errors:', JSON.stringify(errors.slice(0, 5), null, 2));
